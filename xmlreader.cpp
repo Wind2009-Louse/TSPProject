@@ -36,9 +36,9 @@ thrust::host_vector<Vertex> read_xml_map(const char* filename) {
 			int _id = atoi(subElem->GetText());
 
 			// if skipped, add an empty one(self to self distance)
-			if (_id != subcount) {
+			while (_id != subcount) {
 				subcount++;
-				_v.distances.push_back(0);
+				_v.distances.push_back(-1);
 			}
 			_v.distances.push_back(_dis);
 		}

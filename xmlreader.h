@@ -27,7 +27,7 @@ public:
 	int id;
 
 	// a distance matrix, including the distance to other vertexes
-	// specially, distances[id] = 0
+	// specially, distances[id] < 0 means no way to vertex with such id
 	thrust::host_vector<float> distances;
 };
 
