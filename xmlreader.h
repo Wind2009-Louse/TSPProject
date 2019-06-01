@@ -15,7 +15,6 @@ data source: https://wwwproxy.iwr.uni-heidelberg.de/groups/comopt/software/TSPLI
 #include "thrust/device_vector.h"
 
 // normal lib
-
 #include <iostream>
 #include "tinyxml/tinystr.h"
 #include "tinyxml/tinyxml.h"
@@ -24,10 +23,15 @@ using namespace std;
 
 class Vertex {
 public:
+	// current vertex's id
 	int id;
+
+	// a distance matrix, including the distance to other vertexes
+	// specially, distances[id] = 0
 	thrust::host_vector<float> distances;
 };
 
+// read map from xml file, return a vector of Vertex
 thrust::host_vector<Vertex> read_xml_map(const char* filename);
 
 #endif
