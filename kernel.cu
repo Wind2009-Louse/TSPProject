@@ -96,7 +96,7 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 	return result;
 }
 
-void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> sequence, int max_trial = 2500) {
+void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> sequence, int max_trial = 5000, int max_retry = 1000) {
 	const int origin_heat = 10000;
 	const float deheat = 0.95;
 	// initialize
@@ -163,9 +163,6 @@ void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> seque
 		if (!accept) {
 			int accept_chance = exp(-delta / heat) * 10000;
 			accept = random(10000) <= accept_chance;
-			if (accept) {
-				printf("(Accept with chance %d)",accept_chance);
-			}
 		}
 
 		if (accept) {
@@ -185,14 +182,13 @@ void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> seque
 				reverse_begin++;
 				reverse_end--;
 			}
-			//seq_length = calculate_distance(maps, sequence);
 			printf("%d: Current length is %.5f\n", max_trial, seq_length);
 		}
 		else {
 			refuse_times++;
 			max_trial++;
 			// too much trial
-			if (refuse_times >= 100) {
+			if (refuse_times >= max_retry) {
 				break;
 			}
 		}
