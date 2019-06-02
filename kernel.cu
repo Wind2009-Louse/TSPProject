@@ -6,8 +6,8 @@
 #include <time.h>
 #define random(x) (rand()%x)
 
-// make a random sequence that satisfy TSP
-// input a vector of vertex, return a vector contains the list
+// make a random sequence that satisfy TSP.
+// input a vector of vertex, return a vector contains the list.
 thrust::host_vector<int> make_random_sequence(thrust::host_vector<Vertex> list) {
 	// initialize
 	thrust::host_vector<int> result;
@@ -74,6 +74,25 @@ thrust::host_vector<int> make_random_sequence(thrust::host_vector<Vertex> list) 
 	return result;
 }
 
+// calculate the total distance for a sequence.
+// input a vector of vertex and the sequences, return the total length of sequence.
+float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<int> sequence) {
+	float result = 0;
+	auto s_size = sequence.size();
+	for (int i = 0; i < s_size; ++i) {
+		int current = sequence[i];
+		int next = sequence[(i + 1) % s_size];
+		float _distance = maps[i].distances[i + 1];
+		if (_distance <= 0) {
+			printf("Warning: distance from %d to %d is not positive, but it's on the sequence.\n",current, next);
+			_distance = 0;
+		}
+		result += _distance;
+	}
+	return result;
+}
+
+// main function
 int main() {
 	thrust::host_vector<Vertex> maps = read_xml_map("a280.xml");
 	thrust::host_vector<int> random_ways = make_random_sequence(maps);

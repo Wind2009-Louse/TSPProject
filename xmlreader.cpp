@@ -8,7 +8,8 @@ thrust::host_vector<Vertex> read_xml_map(const char* filename) {
 	// open file
 	TiXmlDocument doc(filename);
 	if (!doc.LoadFile()) {
-		cout << "Unable to open " << filename << "!" << endl;
+		printf("Unable to open %s!", filename);
+		//cout << "Unable to open " << filename << "!" << endl;
 		throw;
 	}
 
