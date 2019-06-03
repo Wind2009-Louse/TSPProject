@@ -162,7 +162,7 @@ void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> seque
 		bool accept = (delta < 0);
 		if (!accept) {
 			int accept_chance = exp(-delta / heat) * 10000;
-			accept = random(10000) <= accept_chance;
+			accept = random(10000) < accept_chance;
 		}
 
 		if (accept) {
@@ -197,9 +197,9 @@ void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> seque
 
 // main function
 int main() {
-	thrust::host_vector<Vertex> maps = read_xml_map("a280.xml");
+	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
 	thrust::host_vector<int> random_ways = make_random_sequence(maps);
-	serial_TSP(maps, random_ways);
+	serial_TSP(maps, random_ways, 100000, 5000);
 
 	return 0;
 }
