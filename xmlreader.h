@@ -1,7 +1,7 @@
 /*
 Transform XML data into c++ data.
 
-data source: https://wwwproxy.iwr.uni-heidelberg.de/groups/comopt/software/TSPLIB95/tsp/
+data source: https://wwwproxy.iwr.uni-heidelberg.de/groups/comopt/software/TSPLIB95/XML-TSPLIB/instances/
 */
 
 #ifndef XMLREADER_H
