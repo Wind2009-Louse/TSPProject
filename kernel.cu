@@ -96,11 +96,15 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 	return result;
 }
 
-void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> sequence, int max_trial = 5000, int max_retry = 1000) {
+// serial TSP solver
+// input the map and some args, return a vector with the (maybe) best way.
+thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, int max_trial = 5000, int max_retry = 1000) {
 	const int origin_heat = 10000;
 	const float deheat = 0.95;
+
 	// initialize
 	int heat = origin_heat;
+	thrust::host_vector<int> sequence = make_random_sequence(maps);
 	float seq_length = calculate_distance(maps, sequence);
 	auto seq_size = sequence.size();
 	int refuse_times = 0;
@@ -193,13 +197,14 @@ void serial_TSP(thrust::host_vector<Vertex> maps, thrust::host_vector<int> seque
 			}
 		}
 	}
+
+	return sequence;
 }
 
 // main function
 int main() {
 	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
-	thrust::host_vector<int> random_ways = make_random_sequence(maps);
-	serial_TSP(maps, random_ways, 100000, 5000);
+	thrust::host_vector<int> way_result = serial_TSP(maps, 100000, 10000);
 
 	return 0;
 }
