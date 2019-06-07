@@ -1,11 +1,14 @@
 // cuda lib included in it
 #include "xmlreader.h"
+#include "curand_kernel.h"
 
 #include <vector>
+#include <thrust/copy.h>
 // for random
 #include <stdlib.h>
 #include <time.h>
 #define random(x) (rand()%x)
+#define curandom(gene, x) ((int)(curand_uniform(&gene) * x) % x)
 #define min(x,y) (x < y ? x : y)
 #define max(x,y) (x > y ? x : y)
 
@@ -98,10 +101,7 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 
 // serial TSP solver
 // input the map and some args, return a vector with the (maybe) best way.
-thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, int max_trial = 5000, int max_retry = 1000) {
-	const int origin_heat = 10000;
-	const float deheat = 0.95;
-
+thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, int max_trial = 5000, int max_retry = 1000, int origin_heat = 10000, float deheat = 0.95) {
 	// initialize
 	int heat = origin_heat;
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -210,6 +210,8 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, int max_tr
 //   max_trial: max trial times in this function
 //   max_retry: max retry count for each trial
 //              if reach the max_retry, it will stop in advanced
+//   heat: heat of possibility
+//   random_seed: seed for random function
 //   parallel_count: count of computation in a row
 // output:
 //   is_refused: a 1d vector recording each thread's return status.
@@ -219,11 +221,116 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, int max_tr
 //                   use sequences_list[tid * map_width] to fetch it (length map_width)
 __global__ void gpu_TSP_kernel(
 	float* map, const int map_width,
-	int max_trial, int max_retry, int parallel_count,
+	int max_trial, int max_retry, 
+	float heat, int random_seed, int parallel_count,
 	bool* is_refused, int* sequences_list
 ) {
+	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
-	// TODO
+	int tcount = blockDim.x;
+
+	// random init
+	curandState rand_generator;
+	curand_init(random_seed, tid, 0, &rand_generator);
+
+	float rand_d = curand_uniform(&rand_generator);
+
+	// for each parallel times
+	// if threads is not enough, it needs to run several times
+	for (int pid = tid; pid < parallel_count; pid += tcount) {
+		// initial
+		int refused_times = 0;
+		is_refused[pid] = false;
+		int* sequence_head = sequences_list + pid * map_width;
+		
+		// run for each 
+		while (max_trial--) {
+			// initial
+
+			// pointer
+			int first_point = 0;
+			int next_point = 0;
+			// edge's id
+			int first_begin = 0;
+			int first_end = 0;
+			int next_begin = 0;
+			int next_end = 0;
+			// distances
+			float distance_fb_to_fe = 0;
+			float distance_nb_to_ne = 0;
+			float distance_fb_to_nb = 0;
+			float distance_fe_to_ne = 0;
+
+			// find two point to exchange
+			// from a[first_begin - first_end]bc[next_begin - next_end]d
+			// to   a[first_begin - next_begin]cb[first_end - next_end]d
+			while (true) {
+				int _temp_1 = curandom(rand_generator,map_width);
+				int _temp_2 = curandom(rand_generator, map_width);
+				first_point = min(_temp_1, _temp_2);
+				next_point = max(_temp_1, _temp_2);
+
+				// judge whether changeable
+
+				// too near
+				if (next_point - first_point < 2) {
+					continue;
+				}
+
+				// unable to connect
+				first_begin = sequence_head[first_point];
+				first_end = sequence_head[(first_point + 1) % map_width];
+				next_begin = sequence_head[next_point];
+				next_end = sequence_head[(next_point + 1) % map_width];
+				distance_fb_to_nb = map[first_begin * map_width + next_begin];
+				distance_fe_to_ne = map[first_end * map_width + next_end];
+				if (distance_fb_to_nb >= 0 && distance_fe_to_ne >= 0) {
+					break;
+				}
+			}
+
+			// calculate origin distance
+			distance_fb_to_fe = map[first_begin * map_width + first_end];
+			distance_nb_to_ne = map[next_begin * map_width + next_end];
+
+			// calculate delta
+			float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
+			// decide whether to accept it 
+			// if delta >= 0, chance to accept it
+			bool accept = (delta < 0);
+			if (!accept) {
+				int accept_chance = exp(-delta / heat) * 10000;
+				accept = curandom(rand_generator,10000) < accept_chance;
+			}
+
+			if (accept) {
+				refused_times = 0;
+				// make new seq
+				sequence_head[(first_point + 1) % map_width] = next_begin;
+				sequence_head[(next_point) % map_width] = first_end;
+				// reverse [(first_point + 2) .. (next_point - 1)]
+				int reverse_begin = first_point + 2;
+				int reverse_end = next_point - 1;
+				while (reverse_begin < reverse_end) {
+					int _temp = sequence_head[reverse_begin];
+					sequence_head[reverse_begin] = sequence_head[reverse_end];
+					sequence_head[reverse_end] = _temp;
+					reverse_begin++;
+					reverse_end--;
+				}
+			}
+			else {
+				refused_times++;
+				max_trial++;
+				// too much trial
+				if (refused_times >= max_retry) {
+					is_refused[pid] = true;
+					break;
+				}
+			}
+		}
+	}
+
 }
 
 // host part of TSP gpu-solver
@@ -232,10 +339,15 @@ __global__ void gpu_TSP_kernel(
 //   max_trial: max trial times
 //   max_retry: max retry count for each trial
 //              if reach the max_retry, it will stop in advanced
+//   heat: heat of possibility
 //   parallel_count: count of computation in a row
 //   trial_per_loop: trial times for per loop
 // output: a vector with the (maybe) best way.
-thrust::host_vector<int> gpu_TSP_host(thrust::host_vector<Vertex> maps, int max_trial = 5000, int max_retry = 1000, int parallel_count = 128, int trial_per_loop = 100) {
+thrust::host_vector<int> gpu_TSP_host(
+	thrust::host_vector<Vertex> maps,
+	int max_trial = 5000, int max_retry = 1000, float heat = 10000, float deheat = 0.9,
+	int parallel_count = 128, int trial_per_loop = 100
+) {
 	// make sequence
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
 
@@ -248,6 +360,9 @@ thrust::host_vector<int> gpu_TSP_host(thrust::host_vector<Vertex> maps, int max_
 	}
 	thrust::device_vector<float> device_distance_map = host_distance_map;
 
+	// initialize refuse vector
+	thrust::device_vector<bool> device_is_refused(parallel_count, false);
+
 	// run loop
 	while (max_trial > 0) {
 		// transform sequence into kernel form(for each thread)
@@ -257,24 +372,49 @@ thrust::host_vector<int> gpu_TSP_host(thrust::host_vector<Vertex> maps, int max_
 		}
 		thrust::device_vector<int> device_sequence = host_sequence;
 
-		// initialize refuse vector
-		thrust::device_vector<bool> is_refused(parallel_count, false);
+		cudaError_t error = cudaGetLastError();
+		//printf("CUDA error: %s\n", cudaGetErrorString(error));
 
 		// initialize trial times for this times
 		int trial_times = max_trial > trial_per_loop ? trial_per_loop : max_trial;
 		max_trial -= trial_times;
 
 		// run kernel
-		gpu_TSP_kernel (
+		gpu_TSP_kernel<<<1,128>>> (
 			thrust::raw_pointer_cast(&device_distance_map[0]), map_size,
-			trial_times, max_retry, parallel_count,
-			thrust::raw_pointer_cast(&is_refused[0]), thrust::raw_pointer_cast(&device_sequence[0]));
+			trial_times, max_retry, 
+			heat, (int)time(0), parallel_count,
+			thrust::raw_pointer_cast(&device_is_refused[0]), 
+			thrust::raw_pointer_cast(&device_sequence[0]));
+		cudaDeviceSynchronize();
+
+		error = cudaGetLastError();
+		//printf("CUDA error: %s\n", cudaGetErrorString(error));
+
+		// get result
+		host_sequence.assign(device_sequence.begin(), device_sequence.end());
+		thrust::host_vector<bool> host_is_refused = device_is_refused;
 
 		// find the best sequence
-		// TODO
+		float shortest_length = -1;
+		for (int i = 0; i < parallel_count; ++i) {
+			// for each sequence
+			thrust::host_vector<int> _seq(map_size);
+			thrust::copy(device_sequence.begin() + i * map_size, device_sequence.begin() + (i + 1)*map_size, _seq.begin());
+
+			// judge
+			float distance = calculate_distance(maps, _seq);
+			if (shortest_length < 0 || distance < shortest_length) {
+				sequence.assign(_seq.begin(), _seq.end());
+				shortest_length = distance;
+			}
+		}
+		printf("%d: Current length is %.5f\n", max_trial, shortest_length);
 
 		// judge whether all-stop
-		// TODO
+		if (thrust::find(host_is_refused.begin(), host_is_refused.end(), false) == host_is_refused.end()) {
+			break;
+		}
 	}
 	return sequence;
 }
