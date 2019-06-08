@@ -227,17 +227,14 @@ __global__ void gpu_TSP_kernel(
 ) {
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
-	int tcount = blockDim.x;
 
 	// random init
 	curandState rand_generator;
 	curand_init(random_seed, tid, 0, &rand_generator);
 
-	float rand_d = curand_uniform(&rand_generator);
-
 	// for each parallel times
 	// if threads is not enough, it needs to run several times
-	for (int pid = tid; pid < parallel_count; pid += tcount) {
+	for (int pid = tid; pid < parallel_count; pid += blockDim.x) {
 		// initial
 		int refused_times = 0;
 		is_refused[pid] = false;
@@ -345,11 +342,12 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	int max_trial = 5000, int max_retry = 1000, float heat = 10000, float deheat = 0.9,
-	int parallel_count = 128, int trial_per_loop = 100
+	int max_trial = 5000, int max_retry = 500, float heat = 10000, float deheat = 0.95,
+	int parallel_count = 128, int trial_per_loop = 500
 ) {
 	// make sequence
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
+	float deheat_per_loop = pow(deheat, trial_per_loop);
 
 	// transform maps into kernel form
 	auto map_size = maps.size();
@@ -372,9 +370,6 @@ thrust::host_vector<int> gpu_TSP_host(
 		}
 		thrust::device_vector<int> device_sequence = host_sequence;
 
-		cudaError_t error = cudaGetLastError();
-		//printf("CUDA error: %s\n", cudaGetErrorString(error));
-
 		// initialize trial times for this times
 		int trial_times = max_trial > trial_per_loop ? trial_per_loop : max_trial;
 		max_trial -= trial_times;
@@ -388,8 +383,12 @@ thrust::host_vector<int> gpu_TSP_host(
 			thrust::raw_pointer_cast(&device_sequence[0]));
 		cudaDeviceSynchronize();
 
-		error = cudaGetLastError();
-		//printf("CUDA error: %s\n", cudaGetErrorString(error));
+		// error check
+		cudaError_t error = cudaGetLastError();
+		const char* err_msg = cudaGetErrorString(error);
+		if (strcmp("no error", err_msg) != 0) {
+			printf("CUDA error: %s\n", err_msg);
+		}
 
 		// get result
 		host_sequence.assign(device_sequence.begin(), device_sequence.end());
@@ -400,7 +399,7 @@ thrust::host_vector<int> gpu_TSP_host(
 		for (int i = 0; i < parallel_count; ++i) {
 			// for each sequence
 			thrust::host_vector<int> _seq(map_size);
-			thrust::copy(device_sequence.begin() + i * map_size, device_sequence.begin() + (i + 1)*map_size, _seq.begin());
+			thrust::copy(host_sequence.begin() + i * map_size, host_sequence.begin() + (i + 1)*map_size, _seq.begin());
 
 			// judge
 			float distance = calculate_distance(maps, _seq);
@@ -415,6 +414,9 @@ thrust::host_vector<int> gpu_TSP_host(
 		if (thrust::find(host_is_refused.begin(), host_is_refused.end(), false) == host_is_refused.end()) {
 			break;
 		}
+
+		// deheat
+		heat *= deheat_per_loop;
 	}
 	return sequence;
 }
