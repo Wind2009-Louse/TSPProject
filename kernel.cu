@@ -238,8 +238,11 @@ __global__ void gpu_TSP_kernel(
 		// initial
 		int refused_times = 0;
 		is_refused[pid] = false;
-		int* sequence_head = sequences_list + pid * map_width;
-		
+		int* sequence_head = new int[map_width];
+		for (int i = 0; i < map_width; ++i) {
+			sequence_head[i] = sequences_list[pid * map_width + i];
+		}
+
 		// run for each 
 		while (max_trial--) {
 			// initial
@@ -306,8 +309,8 @@ __global__ void gpu_TSP_kernel(
 				sequence_head[(first_point + 1) % map_width] = next_begin;
 				sequence_head[(next_point) % map_width] = first_end;
 				// reverse [(first_point + 2) .. (next_point - 1)]
-				int reverse_begin = first_point + 2;
-				int reverse_end = next_point - 1;
+				int reverse_begin = (first_point + 2) % map_width;
+				int reverse_end = (next_point - 1) % map_width;
 				while (reverse_begin < reverse_end) {
 					int _temp = sequence_head[reverse_begin];
 					sequence_head[reverse_begin] = sequence_head[reverse_end];
@@ -326,6 +329,11 @@ __global__ void gpu_TSP_kernel(
 				}
 			}
 		}
+		
+		for (int i = 0; i < map_width; ++i) {
+			sequences_list[pid * map_width + i] = sequence_head[i];
+		}
+		delete sequence_head;
 	}
 
 }
@@ -342,8 +350,8 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	int max_trial = 5000, int max_retry = 500, float heat = 10000, float deheat = 0.95,
-	int parallel_count = 128, int trial_per_loop = 500
+	int max_trial = 10000, int max_retry = 500, float heat = 10000, float deheat = 0.95,
+	int parallel_count = 128, int trial_per_loop = 100
 ) {
 	// make sequence
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -424,7 +432,9 @@ thrust::host_vector<int> gpu_TSP_host(
 // main function
 int main() {
 	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
-	//thrust::host_vector<int> way_result = serial_TSP(maps, 100000, 10000);
+	
+	thrust::host_vector<int> way_result = serial_TSP(maps, 100000, 10000);
+	
 	gpu_TSP_host(maps);
 
 	return 0;
