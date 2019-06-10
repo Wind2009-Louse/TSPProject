@@ -4,13 +4,19 @@
 
 #include <vector>
 #include <thrust/copy.h>
+
 // for random
 #include <stdlib.h>
 #include <time.h>
 #define random(x) (rand()%x)
 #define curandom(gene, x) ((int)(curand_uniform(&gene) * x) % x)
+
+// for max/min
 #define min(x,y) (x < y ? x : y)
 #define max(x,y) (x > y ? x : y)
+
+// for time-count
+#include <ctime>
 
 // make a random sequence that satisfy TSP.
 // input a vector of vertex, return a vector contains the list.
@@ -243,8 +249,9 @@ __global__ void gpu_TSP_kernel(
 			sequence_head[i] = sequences_list[pid * map_width + i];
 		}
 
+		int local_trial = max_trial;
 		// run for each 
-		while (max_trial--) {
+		while (local_trial--) {
 			// initial
 
 			// pointer
@@ -321,10 +328,12 @@ __global__ void gpu_TSP_kernel(
 			}
 			else {
 				refused_times++;
-				max_trial++;
+				local_trial++;
 				// too much trial
 				if (refused_times >= max_retry) {
-					is_refused[pid] = true;
+					if (local_trial == max_trial){
+						is_refused[pid] = true;
+					}
 					break;
 				}
 			}
@@ -350,7 +359,7 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	int max_trial = 10000, int max_retry = 500, float heat = 10000, float deheat = 0.95,
+	int max_trial = 10000, int max_retry = 1000, float heat = 10000, float deheat = 0.95,
 	int parallel_count = 128, int trial_per_loop = 100
 ) {
 	// make sequence
@@ -431,11 +440,23 @@ thrust::host_vector<int> gpu_TSP_host(
 
 // main function
 int main() {
+	clock_t ck, ck_2;
 	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
-	
-	thrust::host_vector<int> way_result = serial_TSP(maps, 100000, 10000);
-	
-	gpu_TSP_host(maps);
+
+	ck = clock();
+	thrust::host_vector<int> serial_result = serial_TSP(maps, 100000, 10000);
+	ck_2 = clock();
+	printf("Serial time: %d\n", ck_2 - ck);
+	printf("Serial length: %.5f\n", calculate_distance(maps, serial_result));
+
+	ck = clock();
+	thrust::host_vector<int> parallel_result = gpu_TSP_host(maps);
+	ck_2 = clock();
+	printf("Parallel time: %d\n", ck_2 - ck);
+	printf("Parallel length: %.5f\n", calculate_distance(maps, parallel_result));
+
+	printf("Run Successfully.\n");
+	system("pause");
 
 	return 0;
 }
