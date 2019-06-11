@@ -226,6 +226,18 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 	return sequence;
 }
 
+// random initializer
+// input a seed and count, then output a vector of initialized curandState(To avoid over-initial)
+__global__ void random_initial(int seed, int parallel_count, curandState* gene_list) {
+	// init
+	int tid = blockDim.x * blockIdx.x + threadIdx.x;
+
+	// random init
+	for (int i = tid; i < parallel_count; i += blockDim.x) {
+		curand_init(seed, tid, 0, &gene_list[tid]);
+	}
+}
+
 // kernal part of TSP gpu-solver
 // input:
 //   map: a one-dimension vector on behalf of a 2d matrix
@@ -243,16 +255,12 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 //                   use sequences_list[tid * map_width] to fetch it (length map_width)
 __global__ void gpu_TSP_kernel(
 	float* map, const int map_width,
-	float heat, int random_seed, int parallel_count,
-	bool* is_refused,
+	float heat, int parallel_count,
+	curandState* rand_genes, bool* is_refused,
 	int* sequences_list, float* sequences_length
 ) {
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
-
-	// random init
-	curandState rand_generator;
-	curand_init(random_seed, tid, 0, &rand_generator);
 
 	// for each parallel times
 	// if threads is not enough, it needs to run several times
@@ -284,8 +292,8 @@ __global__ void gpu_TSP_kernel(
 		// from a[first_begin - first_end]bc[next_begin - next_end]d
 		// to   a[first_begin - next_begin]cb[first_end - next_end]d
 		while (true) {
-			int _temp_1 = curandom(rand_generator,map_width);
-			int _temp_2 = curandom(rand_generator, map_width);
+			int _temp_1 = curandom(rand_genes[pid],map_width);
+			int _temp_2 = curandom(rand_genes[pid], map_width);
 			first_point = min(_temp_1, _temp_2);
 			next_point = max(_temp_1, _temp_2);
 
@@ -319,7 +327,7 @@ __global__ void gpu_TSP_kernel(
 		bool accept = (delta < 0);
 		if (!accept) {
 			int accept_chance = exp(-delta / heat) * 10000;
-			accept = curandom(rand_generator,10000) < accept_chance;
+			accept = curandom(rand_genes[pid],10000) < accept_chance;
 		}
 
 		if (accept) {
@@ -391,6 +399,11 @@ thrust::host_vector<int> gpu_TSP_host(
 	thrust::device_vector<int> device_sequence = host_sequences;
 	thrust::device_vector<float> device_sequences_length = host_sequences_length;
 
+	// random initialize
+	thrust::device_vector<curandState> rand_genes(parallel_count);
+	random_initial << <1, 512 >> > ((int)time(0), parallel_count, thrust::raw_pointer_cast(&rand_genes[0]));
+	cudaDeviceSynchronize();
+
 	// run loop
 	int refused_times = 0;
 	int trial_per_t = 0;
@@ -404,7 +417,8 @@ thrust::host_vector<int> gpu_TSP_host(
 			// run kernel
 			gpu_TSP_kernel << <1, 512 >> > (
 				thrust::raw_pointer_cast(&device_distance_map[0]), map_size,
-				heat, (int)time(0), parallel_count,
+				heat, parallel_count,
+				thrust::raw_pointer_cast(&rand_genes[0]),
 				thrust::raw_pointer_cast(&device_is_refused[0]),
 				thrust::raw_pointer_cast(&device_sequence[0]),
 				thrust::raw_pointer_cast(&device_sequences_length[0]));
