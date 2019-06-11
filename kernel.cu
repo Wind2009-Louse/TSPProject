@@ -107,7 +107,9 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 
 // serial TSP solver
 // input the map and some args, return a vector with the (maybe) best way.
-thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, int max_retry = 2, int max_refuse = 50, int origin_heat = 10000, float deheat = 0.95, int beta = 3) {
+thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
+	int max_retry = 2, int max_refuse = 50, 
+	int origin_heat = 10000, float deheat = 0.95, int beta = 1) {
 	// initialize
 	float heat = origin_heat;
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -353,7 +355,7 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	float heat = 10000, float deheat = 0.95, float beta = 3, 
+	float heat = 10000, float deheat = 0.95, float beta = 1, 
 	int parallel_count = 512
 ) {
 	// transform maps into kernel form
@@ -385,7 +387,7 @@ thrust::host_vector<int> gpu_TSP_host(
 	int max_trial_per_t = beta * map_size * map_size;
 	while (heat > 0.0001) {
 		// first initialize
-		bool is_first = true;
+		bool changed_in_t = true;
 		while (true) {
 			// run kernel
 			gpu_TSP_kernel << <1, 512 >> > (
@@ -429,7 +431,7 @@ thrust::host_vector<int> gpu_TSP_host(
 			// if all_retry or too much trial
 			if (!has_accept || trial_per_t >= max_trial_per_t) {
 				// no change in this T
-				if (is_first) {
+				if (changed_in_t) {
 					refused_times++;
 				}
 				break;
@@ -437,7 +439,7 @@ thrust::host_vector<int> gpu_TSP_host(
 			else {
 				refused_times = 0;
 			}
-			is_first = false;
+			changed_in_t = false;
 		}
 
 		if (refused_times >= 10) {
