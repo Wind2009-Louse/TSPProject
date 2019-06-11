@@ -109,7 +109,7 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 // input the map and some args, return a vector with the (maybe) best way.
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
 	int max_retry = 2, int max_refuse = 50, 
-	int origin_heat = 10000, float deheat = 0.95, int beta = 1) {
+	int origin_heat = 100, float deheat = 0.95, int beta = 1) {
 	// initialize
 	float heat = origin_heat;
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -355,7 +355,7 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	float heat = 10000, float deheat = 0.95, float beta = 1, 
+	float heat = 100, float deheat = 0.95, float beta = 1, 
 	int parallel_count = 512
 ) {
 	// transform maps into kernel form
