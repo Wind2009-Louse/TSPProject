@@ -360,7 +360,7 @@ __global__ void gpu_TSP_kernel(
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
 	int max_trial = 10000, int max_retry = 1000, float heat = 10000, float deheat = 0.95,
-	int parallel_count = 128, int trial_per_loop = 100
+	int parallel_count = 512, int trial_per_loop = 100
 ) {
 	// make sequence
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -392,7 +392,7 @@ thrust::host_vector<int> gpu_TSP_host(
 		max_trial -= trial_times;
 
 		// run kernel
-		gpu_TSP_kernel<<<1,128>>> (
+		gpu_TSP_kernel<<<1,512>>> (
 			thrust::raw_pointer_cast(&device_distance_map[0]), map_size,
 			trial_times, max_retry, 
 			heat, (int)time(0), parallel_count,
