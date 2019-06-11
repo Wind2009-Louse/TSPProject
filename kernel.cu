@@ -461,7 +461,8 @@ thrust::host_vector<int> gpu_TSP_host(
 				if (!changed_in_t) {
 					refused_times++;
 				}
-				if (!has_accept) printf("(Early-stop)");
+				if (!changed_in_t) printf("(Refused)");
+				else if (!has_accept) printf("(Early-stop)");
 				else printf("(Normally)");
 				break;
 			}
@@ -471,12 +472,13 @@ thrust::host_vector<int> gpu_TSP_host(
 			changed_in_t = true;
 		}
 
-		if (refused_times >= 10) {
+		if (refused_times >= 5) {
 			break;
 		}
 
 		// deheat
-		printf("%.3f: Current best length is %.3f\n", heat, best_length);
+		float real_length = calculate_distance(maps, best_sequence);
+		printf("%.3f: Current best length is %.3f(%.3f)\n", heat, best_length, real_length);
 		heat *= deheat;
 		trial_per_t = 0;
 	}
