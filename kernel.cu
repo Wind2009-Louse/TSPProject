@@ -108,8 +108,8 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 // serial TSP solver
 // input the map and some args, return a vector with the (maybe) best way.
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
-	int max_retry = 2, int max_refuse = 50, 
-	int origin_heat = 100, float deheat = 0.95, int beta = 1) {
+	int max_retry = 2, int max_refuse = 5, 
+	int origin_heat = 50, float deheat = 0.95, int beta = 1) {
 	// initialize
 	float heat = origin_heat;
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -185,7 +185,6 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 		if (accept) {
 			changed_in_t = true;
 			retry_times = 0;
-			refuse_times = 0;
 
 			seq_length += delta;
 			// make new seq
@@ -201,7 +200,6 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 				reverse_begin++;
 				reverse_end--;
 			}
-			printf("%.3f: Current length is %.5f\n", heat, seq_length);
 		}
 		if (!accept) {
 			retry_times++;
@@ -210,12 +208,18 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 		// too much trial
 		if (retry_times >= max_retry || trial_per_t >= max_trial_per_t) {
 			trial_per_t = 0;
+			if (!changed_in_t) printf("(Early-stop)");
+			else printf("(Normally)");
+			printf("%.3f: Current length is %.5f\n", heat, seq_length);
 			heat *= deheat;
 			if (!changed_in_t) {
 				if (++refuse_times > max_refuse) {
 					break;
 				}
+			} else{
+				refuse_times = 0;
 			}
+			changed_in_t = false;
 		}
 	}
 
@@ -355,7 +359,7 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	float heat = 100, float deheat = 0.95, float beta = 1, 
+	float heat = 50, float deheat = 0.95, float beta = 1, 
 	int parallel_count = 512
 ) {
 	// transform maps into kernel form
@@ -414,8 +418,9 @@ thrust::host_vector<int> gpu_TSP_host(
 				if (!host_is_refused[i]) {
 					has_accept = true;
 					// for each sequence
-					thrust::host_vector<int> _seq(map_size);
-					thrust::copy(host_sequence.begin() + i * map_size, host_sequence.begin() + (i + 1)*map_size, _seq.begin());
+					thrust::host_vector<int> _seq;
+					_seq.insert(_seq.end(), host_sequence.begin() + i * map_size, host_sequence.begin() + (i + 1)*map_size);
+					//thrust::copy(host_sequence.begin() + i * map_size, host_sequence.begin() + (i + 1)*map_size, _seq.begin());
 
 					// judge
 					float distance = calculate_distance(maps, _seq);
@@ -425,8 +430,7 @@ thrust::host_vector<int> gpu_TSP_host(
 					}
 				}
 			}
-			printf("%.3f: Current best length is %.3f\n", heat, best_length);
-			trial_per_t++;
+			trial_per_t += parallel_count;
 
 			// if all_retry or too much trial
 			if (!has_accept || trial_per_t >= max_trial_per_t) {
@@ -434,6 +438,8 @@ thrust::host_vector<int> gpu_TSP_host(
 				if (changed_in_t) {
 					refused_times++;
 				}
+				if (!has_accept) printf("(Early-stop)");
+				else printf("(Normally)");
 				break;
 			}
 			else {
@@ -447,7 +453,9 @@ thrust::host_vector<int> gpu_TSP_host(
 		}
 
 		// deheat
+		printf("%.3f: Current best length is %.3f\n", heat, best_length);
 		heat *= deheat;
+		trial_per_t = 0;
 	}
 	return best_sequence;
 }
@@ -455,10 +463,11 @@ thrust::host_vector<int> gpu_TSP_host(
 // main function
 int main() {
 	clock_t ck, ck_2;
-	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
+	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
+	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/a280.xml");
 
 	ck = clock();
-	thrust::host_vector<int> serial_result = serial_TSP(maps, 100000, 10000);
+	thrust::host_vector<int> serial_result = serial_TSP(maps);
 	ck_2 = clock();
 	printf("Serial time: %d\n", ck_2 - ck);
 	printf("Serial length: %.5f\n", calculate_distance(maps, serial_result));
