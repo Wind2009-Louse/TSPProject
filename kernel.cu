@@ -108,7 +108,7 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 // serial TSP solver
 // input the map and some args, return a vector with the (maybe) best way.
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
-	int max_retry = 2, int max_refuse = 5, 
+	int max_retry = 50, int max_refuse = 5, 
 	float origin_heat = 50, float deheat = 0.95, int beta = 1) {
 	// initialize
 	float heat = origin_heat;
@@ -256,7 +256,7 @@ __global__ void random_initial(int seed, int parallel_count, curandState* gene_l
 __global__ void gpu_TSP_kernel(
 	float* map, const int map_width,
 	float heat, int parallel_count,
-	curandState* rand_genes, bool* is_refused,
+	curandState* rand_genes, int* is_refused,
 	int* sequences_list, float* sequences_length
 ) {
 	// init
@@ -266,7 +266,6 @@ __global__ void gpu_TSP_kernel(
 	// if threads is not enough, it needs to run several times
 	for (int pid = tid; pid < parallel_count; pid += blockDim.x) {
 		// initial
-		is_refused[pid] = false;
 		int* sequence_head = new int[map_width];
 		for (int i = 0; i < map_width; ++i) {
 			sequence_head[i] = sequences_list[pid * map_width + i];
@@ -333,6 +332,7 @@ __global__ void gpu_TSP_kernel(
 		if (accept) {
 			// init
 			sequences_length[pid] += delta;
+			is_refused[pid] = 0;
 
 			// make new seq
 			sequence_head[(first_point + 1) % map_width] = next_begin;
@@ -349,7 +349,7 @@ __global__ void gpu_TSP_kernel(
 			}
 		}
 		else {
-			is_refused[pid] = true;
+			is_refused[pid] += 1;
 		}
 		
 		for (int i = 0; i < map_width; ++i) {
@@ -369,6 +369,7 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
+	int max_retry = 50, int max_refused = 5,
 	float heat = 50, float deheat = 0.95, float beta = 1, 
 	int parallel_count = 512
 ) {
@@ -382,7 +383,7 @@ thrust::host_vector<int> gpu_TSP_host(
 	thrust::device_vector<float> device_distance_map = host_distance_map;
 
 	// initialize refuse vector
-	thrust::device_vector<bool> device_is_refused(parallel_count, false);
+	thrust::device_vector<int> device_is_refused(parallel_count, 0);
 
 	// make sequence
 	thrust::host_vector<int> best_sequence;
@@ -402,7 +403,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	// random initialize
 	thrust::device_vector<curandState> rand_genes(parallel_count);
 	random_initial << <1, 512 >> > ((int)time(0), parallel_count, thrust::raw_pointer_cast(&rand_genes[0]));
-	cudaDeviceSynchronize();
 
 	// run loop
 	int refused_times = 0;
@@ -412,7 +412,7 @@ thrust::host_vector<int> gpu_TSP_host(
 		// first initialize
 
 		// have changed in this T
-		bool changed_in_t = true;
+		bool changed_in_t = false;
 		while (true) {
 			// run kernel
 			gpu_TSP_kernel << <1, 512 >> > (
@@ -422,7 +422,6 @@ thrust::host_vector<int> gpu_TSP_host(
 				thrust::raw_pointer_cast(&device_is_refused[0]),
 				thrust::raw_pointer_cast(&device_sequence[0]),
 				thrust::raw_pointer_cast(&device_sequences_length[0]));
-			cudaDeviceSynchronize();
 
 			// error check
 			cudaError_t error = cudaGetLastError();
@@ -434,14 +433,18 @@ thrust::host_vector<int> gpu_TSP_host(
 			// get result
 			host_sequences.assign(device_sequence.begin(), device_sequence.end());
 			host_sequences_length.assign(device_sequences_length.begin(), device_sequences_length.end());
-			thrust::host_vector<bool> host_is_refused = device_is_refused;
+			thrust::host_vector<int> host_is_refused = device_is_refused;
 
 			// judge whether all stop and find the best one
 			bool has_accept = false;
+			bool seq_changed = false;
+			int retry_times = 0;
 			for (int i = 0; i < parallel_count; ++i) {
-				if (!host_is_refused[i]) {
+				if (host_is_refused[i] == 0) {
 					has_accept = true;
-
+					if (retry_times < max_retry) {
+						retry_times = 0;
+					}
 					// judge
 					float distance = host_sequences_length[i];
 					if (best_length < 0 || distance < best_length) {
@@ -452,8 +455,25 @@ thrust::host_vector<int> gpu_TSP_host(
 						best_length = distance;
 					}
 				}
+				else {
+					retry_times++;
+					if (best_length > 0 && host_is_refused[i] >= max_refused) {
+						seq_changed = true;
+						thrust::copy(best_sequence.begin(), best_sequence.end(), host_sequences.begin() + i * map_size);
+						host_sequences_length[i] = best_length;
+						host_is_refused[i] = 0;
+					}
+				}
 			}
 			trial_per_t += parallel_count;
+			if (retry_times >= max_retry) {
+				has_accept = false;
+			}
+			if (seq_changed) {
+				device_sequence.assign(host_sequences.begin(), host_sequences.end());
+				device_is_refused.assign(host_is_refused.begin(), host_is_refused.end());
+				device_sequences_length.assign(host_sequences_length.begin(), host_sequences_length.end());
+			}
 
 			// if all_retry or too much trial
 			if (!has_accept || trial_per_t >= max_trial_per_t) {
@@ -467,12 +487,12 @@ thrust::host_vector<int> gpu_TSP_host(
 				break;
 			}
 			else {
+				changed_in_t = true;
 				refused_times = 0;
 			}
-			changed_in_t = true;
 		}
 
-		if (refused_times >= 5) {
+		if (refused_times >= max_refused) {
 			break;
 		}
 
