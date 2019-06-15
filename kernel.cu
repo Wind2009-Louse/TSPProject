@@ -27,7 +27,6 @@ thrust::host_vector<int> make_random_sequence(thrust::host_vector<Vertex> list) 
 	vector<bool> reached(list.size(), false);
 	// use as <current_begining, current_ptr>
 	vector<pair<int, int> > steps;
-	srand((int)time(0));
 	auto max_size = list.size();
 
 	// since it's a ring, set the beginning as 0
@@ -362,10 +361,10 @@ thrust::host_vector<int> gpu_TSP_host(
 	auto map_size = maps.size();
 	thrust::host_vector<float> host_distance_map;
 	for (int i = 0; i < map_size; ++i) {
-		thrust::host_vector<float> _v = maps[i].distances;
-		host_distance_map.insert(host_distance_map.end(), _v.begin(), _v.end());
+		host_distance_map.insert(host_distance_map.end(), maps[i].distances.begin(), maps[i].distances.end());
 	}
 	thrust::device_vector<float> device_distance_map = host_distance_map;
+	device_distance_map.resize(host_distance_map.size());
 
 	// initialize refuse vector
 	thrust::device_vector<int> device_is_refused(parallel_count, 0);
@@ -393,6 +392,12 @@ thrust::host_vector<int> gpu_TSP_host(
 	int refused_times = 0;
 	int trial_per_t = 0;
 	int max_trial_per_t = beta * map_size * map_size;
+
+	float* map_ptr = thrust::raw_pointer_cast(&device_distance_map[0]);
+	curandState* curand_ptr = thrust::raw_pointer_cast(&rand_genes[0]);
+	int* refused_ptr = thrust::raw_pointer_cast(&device_is_refused[0]);
+	int* seq_ptr = thrust::raw_pointer_cast(&device_sequence[0]);
+	float* seq_length_ptr = thrust::raw_pointer_cast(&device_sequences_length[0]);
 	while (heat > 0.0001) {
 		// first initialize
 
@@ -401,11 +406,9 @@ thrust::host_vector<int> gpu_TSP_host(
 		while (true) {
 			// run kernel
 			gpu_TSP_kernel << <1, parallel_count >> > (
-				thrust::raw_pointer_cast(&device_distance_map[0]), map_size, heat,
-				thrust::raw_pointer_cast(&rand_genes[0]),
-				thrust::raw_pointer_cast(&device_is_refused[0]),
-				thrust::raw_pointer_cast(&device_sequence[0]),
-				thrust::raw_pointer_cast(&device_sequences_length[0]));
+				map_ptr, map_size, heat, curand_ptr,
+
+				refused_ptr, seq_ptr, seq_length_ptr);
 
 			// error check
 			cudaError_t error = cudaGetLastError();
@@ -498,6 +501,7 @@ thrust::host_vector<int> gpu_TSP_host(
 
 // main function
 int main() {
+	srand((int)time(0));
 	clock_t ck, ck_2;
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
 	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/a280.xml");
