@@ -109,7 +109,7 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 // input the map and some args, return a vector with the (maybe) best way.
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
 	int max_retry = 50, int max_refuse = 5, 
-	float origin_heat = 50, float deheat = 0.95, int beta = 1) {
+	float origin_heat = 50, float deheat = 0.95, int beta = 3) {
 	// initialize
 	float heat = origin_heat;
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -345,14 +345,17 @@ __global__ void gpu_TSP_kernel(
 // host part of TSP gpu-solver
 // input:
 //   maps: a vector of vertex ordered by its id
+//   max_retry: max retry times in a T
+//   max_refused: max refused for a series of T
 //   heat: heat of possibility
+//   deheat: deheat perc
+//   beta: used to calculate max run times per T
 //   parallel_count: count of computation in a row
-//   trial_per_loop: trial times for per loop
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
 	int max_retry = 50, int max_refused = 5,
-	float heat = 50, float deheat = 0.95, float beta = 1, 
+	float heat = 50, float deheat = 0.95, float beta = 3, 
 	int parallel_count = 512
 ) {
 	// transform maps into kernel form
@@ -412,9 +415,10 @@ thrust::host_vector<int> gpu_TSP_host(
 			}
 
 			// get result
-			host_sequences.assign(device_sequence.begin(), device_sequence.end());
 			host_sequences_length.assign(device_sequences_length.begin(), device_sequences_length.end());
 			thrust::host_vector<int> host_is_refused = device_is_refused;
+
+			bool has_copied = false;
 
 			// judge whether all stop and find the best one
 			bool has_accept = false;
@@ -429,6 +433,10 @@ thrust::host_vector<int> gpu_TSP_host(
 					// judge
 					float distance = host_sequences_length[i];
 					if (best_length < 0 || distance < best_length) {
+						if (!has_copied) {
+							has_copied = true;
+							host_sequences.assign(device_sequence.begin(), device_sequence.end());
+						}
 						// update sequence
 						thrust::host_vector<int> _seq;
 						_seq.insert(_seq.end(), host_sequences.begin() + i * map_size, host_sequences.begin() + (i + 1)*map_size);
@@ -440,6 +448,10 @@ thrust::host_vector<int> gpu_TSP_host(
 					retry_times++;
 					if (best_length > 0 && host_is_refused[i] >= max_refused) {
 						seq_changed = true;
+						if (!has_copied) {
+							has_copied = true;
+							host_sequences.assign(device_sequence.begin(), device_sequence.end());
+						}
 						thrust::copy(best_sequence.begin(), best_sequence.end(), host_sequences.begin() + i * map_size);
 						host_sequences_length[i] = best_length;
 						host_is_refused[i] = 0;
