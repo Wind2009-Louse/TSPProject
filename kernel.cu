@@ -101,9 +101,11 @@ thrust::host_vector<int> make_random_sequence(thrust::host_vector<Vertex> list) 
 float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<int> sequence) {
 	float result = 0;
 	auto s_size = sequence.size();
+	// for each vertex
 	for (int i = 0; i < s_size; ++i) {
 		int current = sequence[i];
 		int next = sequence[(i + 1) % s_size];
+		// find the distance
 		float _distance = maps[current].distances[next];
 		if (_distance < 0) {
 			printf("Warning: distance from %d to %d is not positive(%.5f), but it's on the sequence.\n",current, _distance, next);
@@ -115,7 +117,14 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 }
 
 // serial TSP solver
-// input the map and some args, return a vector with the (maybe) best way.
+// input:
+//   maps: a vector of vertex ordered by its id
+//   max_retry: max retry times in a T
+//   max_refused: max refused for a series of T
+//   origin_heat: heat of possibility
+//   deheat: deheat perc
+//   beta: used to calculate max run times per T
+// output: a vector with the (maybe) best way.
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
 	int max_retry = MAX_RETRY, int max_refuse = MAX_REFUSED,
 	float origin_heat = ORIGIN_HEAT, float deheat = DEHEAT_PER, int beta = BETA) {
@@ -154,16 +163,11 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 		// to   a[first_begin - next_begin]cb[first_end - next_end]d
 		while (true) {
 			int _temp_1 = random(seq_size);
-			int _temp_2 = random(seq_size);
+			int _temp_2 = (random(seq_size - 3) + _temp_1 + 2) % seq_size;
 			first_point = min(_temp_1, _temp_2);
 			next_point = max(_temp_1, _temp_2);
 
 			// judge whether changeable
-			
-			// too near
-			if (next_point - first_point < 2) {
-				continue;
-			}
 
 			// unable to connect
 			first_begin = sequence[first_point];
@@ -210,28 +214,35 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 				reverse_end--;
 			}
 		}
+		// if not accepted, add retry
 		if (!accept) {
 			retry_times++;
 		}
 		trial_per_t++;
-		// too much trial
+
+		// too much trial or too much retry
 		if (retry_times >= max_retry || trial_per_t >= max_trial_per_t) {
 			trial_per_t = 0;
 			if (!changed_in_t) printf("(Early-stop)");
 			else printf("(Normally)");
 			printf("%.3f: Current length is %.5f\n", heat, seq_length);
 			heat *= deheat;
+
+			// if is refused
 			if (!changed_in_t) {
+				// if refused too much times
 				if (++refuse_times > max_refuse) {
 					break;
 				}
 			} else{
+				// clear counter
 				refuse_times = 0;
 			}
 			changed_in_t = false;
 		}
 	}
 
+	// return result
 	return sequence;
 }
 
@@ -289,17 +300,11 @@ __global__ void gpu_TSP_kernel(
 	// from a[first_begin - first_end]bc[next_begin - next_end]d
 	// to   a[first_begin - next_begin]cb[first_end - next_end]d
 	int _temp_1 = curandom(rand_genes[tid],map_width);
-	int _temp_2 = (4 + curandom(rand_genes[tid], map_width - 4)) % map_width;
+	int _temp_2 = (_temp_1 + 2 + curandom(rand_genes[tid], map_width - 3)) % map_width;
 	first_point = min(_temp_1, _temp_2);
 	next_point = max(_temp_1, _temp_2);
 
 	// judge whether changeable
-
-	// too near
-	if (next_point - first_point < 2) {
-		is_refused[tid] += 1;
-		return;
-	}
 
 	// unable to connect
 	first_begin = sequences_list[sequences_offset + first_point];
@@ -308,10 +313,6 @@ __global__ void gpu_TSP_kernel(
 	next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
 	distance_fb_to_nb = map[first_begin * map_width + next_begin];
 	distance_fe_to_ne = map[first_end * map_width + next_end];
-	if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
-		is_refused[tid] += 1;
-		return;
-	}
 
 	// calculate origin distance
 	distance_fb_to_fe = map[first_begin * map_width + first_end];
@@ -519,6 +520,7 @@ thrust::host_vector<int> gpu_TSP_host(
 
 // main function
 int main() {
+	// init
 	srand((int)time(0));
 	clock_t ck, ck_2;
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att48.xml");
