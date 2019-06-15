@@ -18,6 +18,9 @@
 // for time-count
 #include <ctime>
 
+// middle DEBUG
+//#define OUTPUT_DEBUG
+
 // make a random sequence that satisfy TSP.
 // input a vector of vertex, return a vector contains the list.
 //thrust::host_vector<int> make_random_sequence(thrust::host_vector<Vertex> list) {
@@ -398,6 +401,9 @@ thrust::host_vector<int> gpu_TSP_host(
 	int* refused_ptr = thrust::raw_pointer_cast(&device_is_refused[0]);
 	int* seq_ptr = thrust::raw_pointer_cast(&device_sequence[0]);
 	float* seq_length_ptr = thrust::raw_pointer_cast(&device_sequences_length[0]);
+
+	clock_t ck, ck_2;
+	ck = clock();
 	while (heat > 0.0001) {
 		// first initialize
 
@@ -475,9 +481,13 @@ thrust::host_vector<int> gpu_TSP_host(
 				if (!changed_in_t) {
 					refused_times++;
 				}
+#ifdef OUTPUT_DEBUG
 				if (!changed_in_t) printf("(Refused)");
 				else if (!has_accept) printf("(Early-stop)");
 				else printf("(Normally)");
+				float real_length = calculate_distance(maps, best_sequence);
+				printf("%.3f: Current best length is %.3f(%.3f)\n", heat, best_length, real_length);
+#endif // OUTPUT_DEBUG
 				break;
 			}
 			else {
@@ -491,11 +501,12 @@ thrust::host_vector<int> gpu_TSP_host(
 		}
 
 		// deheat
-		float real_length = calculate_distance(maps, best_sequence);
-		printf("%.3f: Current best length is %.3f(%.3f)\n", heat, best_length, real_length);
 		heat *= deheat;
 		trial_per_t = 0;
 	}
+	ck_2 = clock();
+	printf("Time used in loop: %d\n", ck_2 - ck);
+	
 	return best_sequence;
 }
 
