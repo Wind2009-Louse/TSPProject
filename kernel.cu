@@ -8,8 +8,8 @@
 // for random
 #include <stdlib.h>
 #include <time.h>
-#define random(x) (rand()%x)
-#define curandom(gene, x) ((int)(curand_uniform(&gene) * x) % x)
+#define random(x) (rand()%(x))
+#define curandom(gene, x) ((int)(curand_uniform(&gene) * (x)) % (x))
 
 // for max/min
 #define min(x,y) (x < y ? x : y)
@@ -228,12 +228,12 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 
 // random initializer
 // input a seed and count, then output a vector of initialized curandState(To avoid over-initial)
-__global__ void random_initial(int seed, int parallel_count, curandState* gene_list) {
+__global__ void random_initial(int seed, curandState* gene_list) {
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 
 	// random init
-	for (int i = tid; i < parallel_count; i += blockDim.x) {
+	for (int i = tid; i < blockDim.x; i += blockDim.x) {
 		curand_init(seed, tid, 0, &gene_list[tid]);
 	}
 }
@@ -245,17 +245,16 @@ __global__ void random_initial(int seed, int parallel_count, curandState* gene_l
 //   map_width: the width of the map
 //              the map is a square, so width = height
 //   heat: heat of possibility
-//   random_seed: seed for random function
-//   parallel_count: count of computation in a row
+//   rand_genes: generators for random function
 // output:
 //   is_refused: a 1d vector recording each thread's return status.
 //               if it's true, the thread stop in advanced.
 // input/output: 
 //   sequences_list: a 1d vector on behalf of a 2d matrix
 //                   use sequences_list[tid * map_width] to fetch it (length map_width)
+//   sequences_length: lengths of each list
 __global__ void gpu_TSP_kernel(
-	float* map, const int map_width,
-	float heat, int parallel_count,
+	float* map, const int map_width, float heat,
 	curandState* rand_genes, int* is_refused,
 	int* sequences_list, float* sequences_length
 ) {
@@ -264,99 +263,96 @@ __global__ void gpu_TSP_kernel(
 
 	// for each parallel times
 	// if threads is not enough, it needs to run several times
-	for (int pid = tid; pid < parallel_count; pid += blockDim.x) {
-		// initial
-		int* sequence_head = new int[map_width];
-		for (int i = 0; i < map_width; ++i) {
-			sequence_head[i] = sequences_list[pid * map_width + i];
-		}
-
-		// initial
-
-		// pointer
-		int first_point = 0;
-		int next_point = 0;
-		// edge's id
-		int first_begin = 0;
-		int first_end = 0;
-		int next_begin = 0;
-		int next_end = 0;
-		// distances
-		float distance_fb_to_fe = 0;
-		float distance_nb_to_ne = 0;
-		float distance_fb_to_nb = 0;
-		float distance_fe_to_ne = 0;
-
-		// find two point to exchange
-		// from a[first_begin - first_end]bc[next_begin - next_end]d
-		// to   a[first_begin - next_begin]cb[first_end - next_end]d
-		while (true) {
-			int _temp_1 = curandom(rand_genes[pid],map_width);
-			int _temp_2 = curandom(rand_genes[pid], map_width);
-			first_point = min(_temp_1, _temp_2);
-			next_point = max(_temp_1, _temp_2);
-
-			// judge whether changeable
-
-			// too near
-			if (next_point - first_point < 2) {
-				continue;
-			}
-
-			// unable to connect
-			first_begin = sequence_head[first_point];
-			first_end = sequence_head[(first_point + 1) % map_width];
-			next_begin = sequence_head[next_point];
-			next_end = sequence_head[(next_point + 1) % map_width];
-			distance_fb_to_nb = map[first_begin * map_width + next_begin];
-			distance_fe_to_ne = map[first_end * map_width + next_end];
-			if (distance_fb_to_nb >= 0 && distance_fe_to_ne >= 0) {
-				break;
-			}
-		}
-
-		// calculate origin distance
-		distance_fb_to_fe = map[first_begin * map_width + first_end];
-		distance_nb_to_ne = map[next_begin * map_width + next_end];
-
-		// calculate delta
-		float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
-		// decide whether to accept it 
-		// if delta >= 0, chance to accept it
-		bool accept = (delta < 0);
-		if (!accept) {
-			int accept_chance = exp(-delta / heat) * 10000;
-			accept = curandom(rand_genes[pid],10000) < accept_chance;
-		}
-
-		if (accept) {
-			// init
-			sequences_length[pid] += delta;
-			is_refused[pid] = 0;
-
-			// make new seq
-			sequence_head[(first_point + 1) % map_width] = next_begin;
-			sequence_head[(next_point) % map_width] = first_end;
-			// reverse [(first_point + 2) .. (next_point - 1)]
-			int reverse_begin = (first_point + 2) % map_width;
-			int reverse_end = (next_point - 1) % map_width;
-			while (reverse_begin < reverse_end) {
-				int _temp = sequence_head[reverse_begin];
-				sequence_head[reverse_begin] = sequence_head[reverse_end];
-				sequence_head[reverse_end] = _temp;
-				reverse_begin++;
-				reverse_end--;
-			}
-		}
-		else {
-			is_refused[pid] += 1;
-		}
-		
-		for (int i = 0; i < map_width; ++i) {
-			sequences_list[pid * map_width + i] = sequence_head[i];
-		}
-		delete sequence_head;
+	int* sequence_head = new int[map_width];
+	for (int i = 0; i < map_width; ++i) {
+		sequence_head[i] = sequences_list[tid * map_width + i];
 	}
+
+	// initial
+
+	// pointer
+	int first_point = 0;
+	int next_point = 0;
+	// edge's id
+	int first_begin = 0;
+	int first_end = 0;
+	int next_begin = 0;
+	int next_end = 0;
+	// distances
+	float distance_fb_to_fe = 0;
+	float distance_nb_to_ne = 0;
+	float distance_fb_to_nb = 0;
+	float distance_fe_to_ne = 0;
+
+	// find two point to exchange
+	// from a[first_begin - first_end]bc[next_begin - next_end]d
+	// to   a[first_begin - next_begin]cb[first_end - next_end]d
+	int _temp_1 = curandom(rand_genes[tid],map_width);
+	int _temp_2 = (4 + curandom(rand_genes[tid], map_width - 4)) % map_width;
+	first_point = min(_temp_1, _temp_2);
+	next_point = max(_temp_1, _temp_2);
+
+	// judge whether changeable
+
+	// too near
+	if (next_point - first_point < 2) {
+		is_refused[tid] += 1;
+		return;
+	}
+
+	// unable to connect
+	first_begin = sequence_head[first_point];
+	first_end = sequence_head[(first_point + 1) % map_width];
+	next_begin = sequence_head[next_point];
+	next_end = sequence_head[(next_point + 1) % map_width];
+	distance_fb_to_nb = map[first_begin * map_width + next_begin];
+	distance_fe_to_ne = map[first_end * map_width + next_end];
+	if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
+		is_refused[tid] += 1;
+		return;
+	}
+
+	// calculate origin distance
+	distance_fb_to_fe = map[first_begin * map_width + first_end];
+	distance_nb_to_ne = map[next_begin * map_width + next_end];
+
+	// calculate delta
+	float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
+	// decide whether to accept it 
+	// if delta >= 0, chance to accept it
+	bool accept = (delta < 0);
+	if (!accept) {
+		int accept_chance = exp(-delta / heat) * 10000;
+		accept = curandom(rand_genes[tid],10000) < accept_chance;
+	}
+
+	if (accept) {
+		// init
+		sequences_length[tid] += delta;
+		is_refused[tid] = 0;
+
+		// make new seq
+		sequence_head[(first_point + 1) % map_width] = next_begin;
+		sequence_head[(next_point) % map_width] = first_end;
+		// reverse [(first_point + 2) .. (next_point - 1)]
+		int reverse_begin = (first_point + 2) % map_width;
+		int reverse_end = (next_point - 1) % map_width;
+		while (reverse_begin < reverse_end) {
+			int _temp = sequence_head[reverse_begin];
+			sequence_head[reverse_begin] = sequence_head[reverse_end];
+			sequence_head[reverse_end] = _temp;
+			reverse_begin++;
+			reverse_end--;
+		}
+	}
+	else {
+		is_refused[tid] += 1;
+	}
+		
+	for (int i = 0; i < map_width; ++i) {
+		sequences_list[tid * map_width + i] = sequence_head[i];
+	}
+	delete sequence_head;
 
 }
 
@@ -402,7 +398,7 @@ thrust::host_vector<int> gpu_TSP_host(
 
 	// random initialize
 	thrust::device_vector<curandState> rand_genes(parallel_count);
-	random_initial << <1, 512 >> > ((int)time(0), parallel_count, thrust::raw_pointer_cast(&rand_genes[0]));
+	random_initial << <1, parallel_count >> > ((int)time(0), thrust::raw_pointer_cast(&rand_genes[0]));
 
 	// run loop
 	int refused_times = 0;
@@ -415,9 +411,8 @@ thrust::host_vector<int> gpu_TSP_host(
 		bool changed_in_t = false;
 		while (true) {
 			// run kernel
-			gpu_TSP_kernel << <1, 512 >> > (
-				thrust::raw_pointer_cast(&device_distance_map[0]), map_size,
-				heat, parallel_count,
+			gpu_TSP_kernel << <1, parallel_count >> > (
+				thrust::raw_pointer_cast(&device_distance_map[0]), map_size, heat,
 				thrust::raw_pointer_cast(&rand_genes[0]),
 				thrust::raw_pointer_cast(&device_is_refused[0]),
 				thrust::raw_pointer_cast(&device_sequence[0]),
