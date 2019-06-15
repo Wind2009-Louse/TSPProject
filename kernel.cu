@@ -21,13 +21,13 @@
 // some constant, used to compared between serial and cuda
 const int MAX_RETRY = 100;
 const int MAX_REFUSED = 5;
-const float ORIGIN_HEAT = 100;
+const float ORIGIN_HEAT = 50;
 const float DEHEAT_PER = 0.95;
 const float MIN_HEAT = 0.0001;
 const int BETA = 3;
 
 // middle DEBUG
-//#define OUTPUT_DEBUG
+#define OUTPUT_DEBUG
 
 // make a random sequence that satisfy TSP.
 // input a vector of vertex, return a vector contains the list.
@@ -437,30 +437,21 @@ thrust::host_vector<int> gpu_TSP_host(
 			// judge whether all stop and find the best one
 			bool has_accept = false;
 			bool seq_changed = false;
-			int retry_times = 0;
+			int best_id = -1;
 			for (int i = 0; i < parallel_count; ++i) {
 				// accept for this sequence
 				if (host_is_refused[i] == 0) {
 					has_accept = true;
 					// clear counter
-					if (retry_times < max_retry) {
-						retry_times = 0;
-					}
 					// judge
 					float distance = host_sequences_length[i];
 					if (best_length < 0 || distance < best_length) {
-						if (!has_copied) {
-							has_copied = true;
-							host_sequences.assign(device_sequence.begin(), device_sequence.end());
-						}
-						// update sequence
-						best_sequence.assign(host_sequences.begin() + i * seq_size, host_sequences.begin() + (i + 1)*seq_size);
+						best_id = i;
 						best_length = distance;
 					}
 				}
 				else {
-					retry_times++;
-					if (best_length > 0 && host_is_refused[i] >= max_refused) {
+					if (best_length > 0 && host_is_refused[i] >= max_retry) {
 						seq_changed = true;
 						if (!has_copied) {
 							has_copied = true;
@@ -472,10 +463,17 @@ thrust::host_vector<int> gpu_TSP_host(
 					}
 				}
 			}
-			trial_per_t += parallel_count;
-			if (retry_times >= max_retry) {
-				has_accept = false;
+			// find the best
+			if (best_id >= 0) {
+				if (!has_copied) {
+					has_copied = true;
+					host_sequences.assign(device_sequence.begin(), device_sequence.end());
+				}
+				// update sequence
+				best_sequence.assign(host_sequences.begin() + best_id * seq_size, host_sequences.begin() + (best_id + 1)*seq_size);
 			}
+
+			trial_per_t += parallel_count;
 			if (seq_changed) {
 				device_sequence.assign(host_sequences.begin(), host_sequences.end());
 				device_is_refused.assign(host_is_refused.begin(), host_is_refused.end());
