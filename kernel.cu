@@ -438,9 +438,7 @@ thrust::host_vector<int> gpu_TSP_host(
 							host_sequences.assign(device_sequence.begin(), device_sequence.end());
 						}
 						// update sequence
-						thrust::host_vector<int> _seq;
-						_seq.insert(_seq.end(), host_sequences.begin() + i * map_size, host_sequences.begin() + (i + 1)*map_size);
-						best_sequence.assign(_seq.begin(), _seq.end());
+						best_sequence.assign(host_sequences.begin() + i * map_size, host_sequences.begin() + (i + 1)*map_size);
 						best_length = distance;
 					}
 				}
