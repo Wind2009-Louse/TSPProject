@@ -23,6 +23,7 @@ const int MAX_RETRY = 100;
 const int MAX_REFUSED = 5;
 const float ORIGIN_HEAT = 100;
 const float DEHEAT_PER = 0.95;
+const float MIN_HEAT = 0.0001;
 const int BETA = 3;
 
 // middle DEBUG
@@ -141,7 +142,7 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 	bool changed_in_t = false;
 
 	// begin to run
-	while (heat > 0.0001) {
+	while (heat > MIN_HEAT) {
 		// initial
 
 		// pointer
@@ -239,6 +240,7 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 				refuse_times = 0;
 			}
 			changed_in_t = false;
+			retry_times = 0;
 		}
 	}
 
@@ -412,7 +414,7 @@ thrust::host_vector<int> gpu_TSP_host(
 
 	clock_t ck, ck_2;
 	ck = clock();
-	while (heat > 0.0001) {
+	while (heat > MIN_HEAT) {
 		// first initialize
 
 		// have changed in this T
@@ -421,7 +423,6 @@ thrust::host_vector<int> gpu_TSP_host(
 			// run kernel
 			gpu_TSP_kernel << <1, parallel_count >> > (
 				map_ptr, map_size, heat, curand_ptr,
-
 				refused_ptr, seq_ptr, seq_length_ptr);
 
 			// error check
@@ -435,6 +436,7 @@ thrust::host_vector<int> gpu_TSP_host(
 			host_sequences_length.assign(device_sequences_length.begin(), device_sequences_length.end());
 			thrust::host_vector<int> host_is_refused = device_is_refused;
 
+			// avoid dump copy for sequences
 			bool has_copied = false;
 
 			// judge whether all stop and find the best one
@@ -442,8 +444,10 @@ thrust::host_vector<int> gpu_TSP_host(
 			bool seq_changed = false;
 			int retry_times = 0;
 			for (int i = 0; i < parallel_count; ++i) {
+				// accept for this sequence
 				if (host_is_refused[i] == 0) {
 					has_accept = true;
+					// clear counter
 					if (retry_times < max_retry) {
 						retry_times = 0;
 					}
