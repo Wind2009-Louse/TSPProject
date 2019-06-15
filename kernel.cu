@@ -417,7 +417,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	// run loop
 	int refused_times = 0;
 	int trial_per_t = 0;
-	int max_trial_per_t = beta * seq_size * seq_size;
 
 	// ptr init
 	float* map_ptr = thrust::raw_pointer_cast(&device_distance_map[0]);
@@ -432,6 +431,7 @@ thrust::host_vector<int> gpu_TSP_host(
 	ck = clock();
 	while (heat > MIN_HEAT) {
 		// first initialize
+		int max_trial_per_t = beta * seq_size * seq_size / max(heat,1);
 
 		// have changed in this T
 		bool changed_in_t = false;
