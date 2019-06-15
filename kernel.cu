@@ -18,6 +18,13 @@
 // for time-count
 #include <ctime>
 
+// some constant, used to compared between serial and cuda
+const int MAX_RETRY = 100;
+const int MAX_REFUSED = 5;
+const float ORIGIN_HEAT = 100;
+const float DEHEAT_PER = 0.95;
+const int BETA = 3;
+
 // middle DEBUG
 //#define OUTPUT_DEBUG
 
@@ -110,8 +117,8 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 // serial TSP solver
 // input the map and some args, return a vector with the (maybe) best way.
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
-	int max_retry = 50, int max_refuse = 5, 
-	float origin_heat = 50, float deheat = 0.95, int beta = 3) {
+	int max_retry = MAX_RETRY, int max_refuse = MAX_REFUSED,
+	float origin_heat = ORIGIN_HEAT, float deheat = DEHEAT_PER, int beta = BETA) {
 	// initialize
 	float heat = origin_heat;
 	thrust::host_vector<int> sequence = make_random_sequence(maps);
@@ -356,8 +363,8 @@ __global__ void gpu_TSP_kernel(
 // output: a vector with the (maybe) best way.
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
-	int max_retry = 50, int max_refused = 5,
-	float heat = 50, float deheat = 0.95, float beta = 3, 
+	int max_retry = MAX_RETRY, int max_refused = MAX_REFUSED,
+	float heat = ORIGIN_HEAT, float deheat = DEHEAT_PER, float beta = BETA,
 	int parallel_count = 512
 ) {
 	// transform maps into kernel form
@@ -514,8 +521,10 @@ thrust::host_vector<int> gpu_TSP_host(
 int main() {
 	srand((int)time(0));
 	clock_t ck, ck_2;
+	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att48.xml");
+	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/a280.xml");
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
-	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/a280.xml");
+	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/d657.xml");
 
 	ck = clock();
 	thrust::host_vector<int> serial_result = serial_TSP(maps);
