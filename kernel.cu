@@ -278,7 +278,8 @@ __global__ void random_initial(int seed, curandState* gene_list) {
 __global__ void gpu_TSP_kernel(
 	float* map, const int map_width, float heat,
 	curandState* rand_genes, int* is_refused,
-	int* sequences_list, float* sequences_length
+	int* sequences_list, float* sequences_length,
+	int* best_id, float* best_dis
 ) {
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
@@ -307,44 +308,58 @@ __global__ void gpu_TSP_kernel(
 	// judge whether changeable
 	if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
 		is_refused[tid] += 1;
-		return;
-	}
-
-	// calculate origin distance
-	float distance_fb_to_fe = map[first_begin * map_width + first_end];
-	float distance_nb_to_ne = map[next_begin * map_width + next_end];
-
-	// calculate delta
-	float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
-	// decide whether to accept it 
-	// if delta >= 0, chance to accept it
-	bool accept = (delta < 0);
-	if (!accept) {
-		int accept_chance = exp(-delta / heat) * 10000;
-		accept = curandom(rand_genes[tid],10000) < accept_chance;
-	}
-
-	if (accept) {
-		// init
-		sequences_length[tid] += delta;
-		is_refused[tid] = 0;
-
-		// make new seq
-		sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
-		sequences_list[sequences_offset + (next_point) % map_width] = first_end;
-		// reverse [(first_point + 2) .. (next_point - 1)]
-		int reverse_begin = (first_point + 2) % map_width;
-		int reverse_end = (next_point - 1) % map_width;
-		while (reverse_begin < reverse_end) {
-			int _temp = sequences_list[sequences_offset + reverse_begin];
-			sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
-			sequences_list[sequences_offset + reverse_end] = _temp;
-			reverse_begin++;
-			reverse_end--;
-		}
 	}
 	else {
-		is_refused[tid] += 1;
+		// calculate origin distance
+		float distance_fb_to_fe = map[first_begin * map_width + first_end];
+		float distance_nb_to_ne = map[next_begin * map_width + next_end];
+
+		// calculate delta
+		float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
+		// decide whether to accept it 
+		// if delta >= 0, chance to accept it
+		bool accept = (delta < 0);
+		if (!accept) {
+			int accept_chance = exp(-delta / heat) * 10000;
+			accept = curandom(rand_genes[tid], 10000) < accept_chance;
+		}
+
+		if (accept) {
+			// init
+			sequences_length[tid] += delta;
+			is_refused[tid] = 0;
+
+			// make new seq
+			sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
+			sequences_list[sequences_offset + (next_point) % map_width] = first_end;
+			// reverse [(first_point + 2) .. (next_point - 1)]
+			int reverse_begin = (first_point + 2) % map_width;
+			int reverse_end = (next_point - 1) % map_width;
+			while (reverse_begin < reverse_end) {
+				int _temp = sequences_list[sequences_offset + reverse_begin];
+				sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
+				sequences_list[sequences_offset + reverse_end] = _temp;
+				reverse_begin++;
+				reverse_end--;
+			}
+		}
+		else {
+			is_refused[tid] += 1;
+		}
+	}
+
+	float _best_length = sequences_length[tid];
+	int _best_id = tid;
+	for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
+		if (tid + i < blockDim.x) {
+			float next_length = sequences_length[tid + i];
+			_best_id = (next_length < _best_length) ? tid + i : _best_id;
+			_best_length = (next_length < _best_length) ? next_length : _best_length;
+		}
+	}
+	if (tid == 0) {
+		best_id[0] = _best_id;
+		best_dis[0] = _best_length;
 	}
 }
 
@@ -395,6 +410,10 @@ thrust::host_vector<int> gpu_TSP_host(
 	thrust::device_vector<curandState> rand_genes(parallel_count);
 	random_initial << <1, parallel_count >> > ((int)time(0), thrust::raw_pointer_cast(&rand_genes[0]));
 
+	// best initialize
+	thrust::device_vector<int> device_best_id(1);
+	thrust::device_vector<float> device_best_dis(1);
+
 	// run loop
 	int refused_times = 0;
 	int trial_per_t = 0;
@@ -406,6 +425,8 @@ thrust::host_vector<int> gpu_TSP_host(
 	int* refused_ptr = thrust::raw_pointer_cast(&device_is_refused[0]);
 	int* seq_ptr = thrust::raw_pointer_cast(&device_sequence[0]);
 	float* seq_length_ptr = thrust::raw_pointer_cast(&device_sequences_length[0]);
+	int* best_id_ptr = thrust::raw_pointer_cast(&device_best_id[0]);
+	float* best_dis_ptr = thrust::raw_pointer_cast(&device_best_dis[0]);
 
 	clock_t ck, ck_2;
 	ck = clock();
@@ -418,7 +439,8 @@ thrust::host_vector<int> gpu_TSP_host(
 			// run kernel
 			gpu_TSP_kernel << <1, parallel_count >> > (
 				map_ptr, seq_size, heat, curand_ptr,
-				refused_ptr, seq_ptr, seq_length_ptr);
+				refused_ptr, seq_ptr, seq_length_ptr, 
+				best_id_ptr, best_dis_ptr);
 
 			// error check
 			cudaError_t error = cudaGetLastError();
@@ -428,7 +450,6 @@ thrust::host_vector<int> gpu_TSP_host(
 			}
 
 			// get result
-			host_sequences_length.assign(device_sequences_length.begin(), device_sequences_length.end());
 			thrust::host_vector<int> host_is_refused = device_is_refused;
 
 			// avoid dump copy for sequences
@@ -437,25 +458,19 @@ thrust::host_vector<int> gpu_TSP_host(
 			// judge whether all stop and find the best one
 			bool has_accept = false;
 			bool seq_changed = false;
-			int best_id = -1;
 			for (int i = 0; i < parallel_count; ++i) {
 				// accept for this sequence
 				if (host_is_refused[i] == 0) {
 					has_accept = true;
-					// clear counter
-					// judge
-					float distance = host_sequences_length[i];
-					if (best_length < 0 || distance < best_length) {
-						best_id = i;
-						best_length = distance;
-					}
 				}
 				else {
+					// reuse the best sequence
 					if (best_length > 0 && host_is_refused[i] >= max_retry) {
 						seq_changed = true;
 						if (!has_copied) {
 							has_copied = true;
 							host_sequences.assign(device_sequence.begin(), device_sequence.end());
+							host_sequences_length.assign(device_sequences_length.begin(), device_sequences_length.end());
 						}
 						thrust::copy(best_sequence.begin(), best_sequence.end(), host_sequences.begin() + i * seq_size);
 						host_sequences_length[i] = best_length;
@@ -464,12 +479,15 @@ thrust::host_vector<int> gpu_TSP_host(
 				}
 			}
 			// find the best
-			if (best_id >= 0) {
+			float best_dis = device_best_dis[0];
+			if (best_length < 0 || best_dis < best_length) {
 				if (!has_copied) {
 					has_copied = true;
 					host_sequences.assign(device_sequence.begin(), device_sequence.end());
 				}
+				int best_id = device_best_id[0];
 				// update sequence
+				best_length = best_dis;
 				best_sequence.assign(host_sequences.begin() + best_id * seq_size, host_sequences.begin() + (best_id + 1)*seq_size);
 			}
 
