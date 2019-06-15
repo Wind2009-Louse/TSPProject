@@ -260,15 +260,7 @@ __global__ void gpu_TSP_kernel(
 ) {
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
-
-	// for each parallel times
-	// if threads is not enough, it needs to run several times
-	int* sequence_head = new int[map_width];
-	for (int i = 0; i < map_width; ++i) {
-		sequence_head[i] = sequences_list[tid * map_width + i];
-	}
-
-	// initial
+	int sequences_offset = tid * map_width;
 
 	// pointer
 	int first_point = 0;
@@ -301,10 +293,10 @@ __global__ void gpu_TSP_kernel(
 	}
 
 	// unable to connect
-	first_begin = sequence_head[first_point];
-	first_end = sequence_head[(first_point + 1) % map_width];
-	next_begin = sequence_head[next_point];
-	next_end = sequence_head[(next_point + 1) % map_width];
+	first_begin = sequences_list[sequences_offset + first_point];
+	first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
+	next_begin = sequences_list[sequences_offset + next_point];
+	next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
 	distance_fb_to_nb = map[first_begin * map_width + next_begin];
 	distance_fe_to_ne = map[first_end * map_width + next_end];
 	if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
@@ -332,15 +324,15 @@ __global__ void gpu_TSP_kernel(
 		is_refused[tid] = 0;
 
 		// make new seq
-		sequence_head[(first_point + 1) % map_width] = next_begin;
-		sequence_head[(next_point) % map_width] = first_end;
+		sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
+		sequences_list[sequences_offset + (next_point) % map_width] = first_end;
 		// reverse [(first_point + 2) .. (next_point - 1)]
 		int reverse_begin = (first_point + 2) % map_width;
 		int reverse_end = (next_point - 1) % map_width;
 		while (reverse_begin < reverse_end) {
-			int _temp = sequence_head[reverse_begin];
-			sequence_head[reverse_begin] = sequence_head[reverse_end];
-			sequence_head[reverse_end] = _temp;
+			int _temp = sequences_list[sequences_offset + reverse_begin];
+			sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
+			sequences_list[sequences_offset + reverse_end] = _temp;
 			reverse_begin++;
 			reverse_end--;
 		}
@@ -348,12 +340,6 @@ __global__ void gpu_TSP_kernel(
 	else {
 		is_refused[tid] += 1;
 	}
-		
-	for (int i = 0; i < map_width; ++i) {
-		sequences_list[tid * map_width + i] = sequence_head[i];
-	}
-	delete sequence_head;
-
 }
 
 // host part of TSP gpu-solver
