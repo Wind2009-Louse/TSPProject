@@ -284,41 +284,35 @@ __global__ void gpu_TSP_kernel(
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
 
-	// pointer
-	int first_point = 0;
-	int next_point = 0;
-	// edge's id
-	int first_begin = 0;
-	int first_end = 0;
-	int next_begin = 0;
-	int next_end = 0;
-	// distances
-	float distance_fb_to_fe = 0;
-	float distance_nb_to_ne = 0;
-	float distance_fb_to_nb = 0;
-	float distance_fe_to_ne = 0;
-
 	// find two point to exchange
 	// from a[first_begin - first_end]bc[next_begin - next_end]d
 	// to   a[first_begin - next_begin]cb[first_end - next_end]d
 	int _temp_1 = curandom(rand_genes[tid],map_width);
 	int _temp_2 = (_temp_1 + 2 + curandom(rand_genes[tid], map_width - 3)) % map_width;
-	first_point = min(_temp_1, _temp_2);
-	next_point = max(_temp_1, _temp_2);
+
+	// pointer
+	int first_point = min(_temp_1, _temp_2);
+	int next_point = max(_temp_1, _temp_2);
+
+	// edge's id
+	int first_begin = sequences_list[sequences_offset + first_point];
+	int first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
+	int next_begin = sequences_list[sequences_offset + next_point];
+	int next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
+
+	// distances
+	float distance_fb_to_nb = map[first_begin * map_width + next_begin];
+	float distance_fe_to_ne = map[first_end * map_width + next_end];
 
 	// judge whether changeable
-
-	// unable to connect
-	first_begin = sequences_list[sequences_offset + first_point];
-	first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
-	next_begin = sequences_list[sequences_offset + next_point];
-	next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
-	distance_fb_to_nb = map[first_begin * map_width + next_begin];
-	distance_fe_to_ne = map[first_end * map_width + next_end];
+	if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
+		is_refused[tid] += 1;
+		return;
+	}
 
 	// calculate origin distance
-	distance_fb_to_fe = map[first_begin * map_width + first_end];
-	distance_nb_to_ne = map[next_begin * map_width + next_end];
+	float distance_fb_to_fe = map[first_begin * map_width + first_end];
+	float distance_nb_to_ne = map[next_begin * map_width + next_end];
 
 	// calculate delta
 	float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
@@ -371,9 +365,9 @@ thrust::host_vector<int> gpu_TSP_host(
 	int parallel_count = 512
 ) {
 	// transform maps into kernel form
-	auto map_size = maps.size();
+	auto seq_size = maps.size();
 	thrust::host_vector<float> host_distance_map;
-	for (int i = 0; i < map_size; ++i) {
+	for (int i = 0; i < seq_size; ++i) {
 		host_distance_map.insert(host_distance_map.end(), maps[i].distances.begin(), maps[i].distances.end());
 	}
 	thrust::device_vector<float> device_distance_map = host_distance_map;
@@ -404,8 +398,9 @@ thrust::host_vector<int> gpu_TSP_host(
 	// run loop
 	int refused_times = 0;
 	int trial_per_t = 0;
-	int max_trial_per_t = beta * map_size * map_size;
+	int max_trial_per_t = beta * seq_size * seq_size;
 
+	// ptr init
 	float* map_ptr = thrust::raw_pointer_cast(&device_distance_map[0]);
 	curandState* curand_ptr = thrust::raw_pointer_cast(&rand_genes[0]);
 	int* refused_ptr = thrust::raw_pointer_cast(&device_is_refused[0]);
@@ -422,7 +417,7 @@ thrust::host_vector<int> gpu_TSP_host(
 		while (true) {
 			// run kernel
 			gpu_TSP_kernel << <1, parallel_count >> > (
-				map_ptr, map_size, heat, curand_ptr,
+				map_ptr, seq_size, heat, curand_ptr,
 				refused_ptr, seq_ptr, seq_length_ptr);
 
 			// error check
@@ -459,7 +454,7 @@ thrust::host_vector<int> gpu_TSP_host(
 							host_sequences.assign(device_sequence.begin(), device_sequence.end());
 						}
 						// update sequence
-						best_sequence.assign(host_sequences.begin() + i * map_size, host_sequences.begin() + (i + 1)*map_size);
+						best_sequence.assign(host_sequences.begin() + i * seq_size, host_sequences.begin() + (i + 1)*seq_size);
 						best_length = distance;
 					}
 				}
@@ -471,7 +466,7 @@ thrust::host_vector<int> gpu_TSP_host(
 							has_copied = true;
 							host_sequences.assign(device_sequence.begin(), device_sequence.end());
 						}
-						thrust::copy(best_sequence.begin(), best_sequence.end(), host_sequences.begin() + i * map_size);
+						thrust::copy(best_sequence.begin(), best_sequence.end(), host_sequences.begin() + i * seq_size);
 						host_sequences_length[i] = best_length;
 						host_is_refused[i] = 0;
 					}
