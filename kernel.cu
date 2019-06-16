@@ -340,7 +340,7 @@ __global__ void gpu_TSP_kernel(
 				// if delta >= 0, chance to accept it
 				bool accept = (delta < 0);
 				if (!accept) {
-					int accept_chance = exp(-delta / heat) * 10000;
+					int accept_chance = __expf(-delta / heat) * 10000;
 					accept = curandom(rand_genes[tid], 10000) < accept_chance;
 				}
 
