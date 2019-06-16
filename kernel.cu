@@ -275,13 +275,12 @@ input:
 * beta: args for max_trial_times
 * rand_genes: generators for random function
 output:
-* is_refused: a 1d vector recording each thread's return status.
-** if it's true, the thread stop in advanced.
 * tag: tag of running result: 0(normal), 1(early-stop), 2(refused)
 input/output: 
 * sequences_list: a 1d vector on behalf of a 2d matrix
 ** use sequences_list[tid * map_width] to fetch it (length map_width)
 * sequences_length: lengths of each list
+* best_dis, best_seq: the best solution's distance and sequence
 */
 __global__ void gpu_TSP_kernel(
 	float* map, const int map_width, int max_retry, float heat, int beta,
@@ -430,6 +429,7 @@ __global__ void gpu_TSP_kernel(
 		for (int i = 0; i < map_width; ++i) {
 			sequences_list[sequences_offset + i] = best_seq[i];
 		}
+		sequences_length[tid] = best_dis[0];
 	}
 
 	// make tag by thread 0
@@ -483,14 +483,14 @@ thrust::host_vector<int> gpu_TSP_host(
 		host_sequences_length.push_back(_length);
 	}
 
+	// transform sequence into kernel form(for each thread)
+	thrust::device_vector<int> device_sequence = host_sequences;
+	thrust::device_vector<float> device_sequences_length = host_sequences_length;
+
 	// best record init
 	thrust::host_vector<int> best_sequence(host_sequences.begin(), host_sequences.begin() + seq_size);
 	thrust::device_vector<int> device_best_sequence = best_sequence;
 	thrust::device_vector<float> device_best_length(1, host_sequences_length[0]);
-
-	// transform sequence into kernel form(for each thread)
-	thrust::device_vector<int> device_sequence = host_sequences;
-	thrust::device_vector<float> device_sequences_length = host_sequences_length;
 
 	// random initialize
 	thrust::device_vector<curandState> rand_genes(parallel_count);
