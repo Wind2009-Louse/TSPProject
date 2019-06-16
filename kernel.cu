@@ -412,8 +412,6 @@ __global__ void gpu_TSP_kernel(
 		}
 
 		// early-stop judge
-		__shared__ bool exist_running[1024];
-		__shared__ bool better_check[1024];
 		exist_running[tid] = is_refused[tid] < max_retry;
 		better_check[tid] = make_better;
 		__syncthreads();
