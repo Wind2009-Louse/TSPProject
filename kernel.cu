@@ -292,7 +292,7 @@ __global__ void gpu_TSP_kernel(
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
-	int max_trial_times = beta * map_width * map_width / blockDim.x;
+	int max_trial_times = beta * map_width * map_width / (1 + blockDim.x * (1 - tag[0]));
 	int retry_count = 0;
 	bool make_better = false;
 
@@ -527,6 +527,9 @@ thrust::host_vector<int> gpu_TSP_host(
 		// no change in this T
 		if (tag == 2) {
 			refused_times++;
+		}
+		if (tag != 0) {
+			result_tag[0] = 1;
 		}
 #ifdef OUTPUT_DEBUG
 		if (tag == 2) printf("(Refused)");
