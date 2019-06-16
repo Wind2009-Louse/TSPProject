@@ -117,15 +117,17 @@ float calculate_distance(thrust::host_vector<Vertex> maps, thrust::host_vector<i
 	return result;
 }
 
-// serial TSP solver
-// input:
-//   maps: a vector of vertex ordered by its id
-//   max_retry: max retry times in a T
-//   max_refused: max refused for a series of T
-//   origin_heat: heat of possibility
-//   deheat: deheat perc
-//   beta: used to calculate max run times per T
-// output: a vector with the (maybe) best way.
+/*
+serial TSP solver
+input:
+* maps: a vector of vertex ordered by its id
+* max_retry: max retry times in a T
+* max_refused: max refused for a series of T
+* origin_heat: heat of possibility
+* deheat: deheat perc
+* beta: used to calculate max run times per T
+output: a vector with the (maybe) best way.
+*/
 thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps, 
 	int max_retry = MAX_RETRY, int max_refuse = MAX_REFUSED,
 	float origin_heat = ORIGIN_HEAT, float deheat = DEHEAT_PER, int beta = BETA) {
@@ -260,150 +262,200 @@ __global__ void random_initial(int seed, curandState* gene_list) {
 	}
 }
 
-// kernal part of TSP gpu-solver
-// input:
-//   map: a one-dimension vector on behalf of a 2d matrix
-//        use map[y * map_width + x] to fetch it.
-//   map_width: the width of the map
-//              the map is a square, so width = height
-//   max_retry: max retry times for each thread
-//     if exceed, it will be reset as the best one
-//   heat: heat of possibility
-//   rand_genes: generators for random function
-// output:
-//   is_refused: a 1d vector recording each thread's return status.
-//               if it's true, the thread stop in advanced.
-//   best_id, best_dis: the id and distance of the best sequence
-// input/output: 
-//   sequences_list: a 1d vector on behalf of a 2d matrix
-//                   use sequences_list[tid * map_width] to fetch it (length map_width)
-//   sequences_length: lengths of each list
+/*
+kernal part of tsp gpu-solver
+input:
+* map: a one-dimension vector on behalf of a 2d matrix
+** use map[y * map_width + x] to fetch it.
+* map_width: the width of the map
+** the map is a square, so width = height
+* max_retry: max retry times for each thread
+** if exceed, it will be reset as the best one
+* heat: heat of possibility
+* beta: args for max_trial_times
+* rand_genes: generators for random function
+output:
+* is_refused: a 1d vector recording each thread's return status.
+** if it's true, the thread stop in advanced.
+* best_id, best_dis: the id and distance of the best sequence
+* tag: tag of running result: 0(normal), 1(early-stop), 2(refused)
+input/output: 
+* sequences_list: a 1d vector on behalf of a 2d matrix
+** use sequences_list[tid * map_width] to fetch it (length map_width)
+* sequences_length: lengths of each list
+*/
 __global__ void gpu_TSP_kernel(
-	float* map, const int map_width, int max_retry, float heat,
+	float* map, const int map_width, int max_retry, float heat, int beta,
 	curandState* rand_genes, int* is_refused,
 	int* sequences_list, float* sequences_length,
 	int* best_id, float* best_dis,
-	float* last_best_dis, int* last_best_seq
+	float* last_best_dis, int* last_best_seq,
+	int* tag
 ) {
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
+	int max_trial_times = beta * map_width * map_width / blockDim.x;
+	is_refused[tid] = 0;
+	bool make_better = false;
 
-	// skip if refused
-	if (is_refused[tid] < max_retry) {
-		// find two point to exchange
-		// from a[first_begin - first_end]bc[next_begin - next_end]d
-		// to   a[first_begin - next_begin]cb[first_end - next_end]d
-		int _temp_1 = curandom(rand_genes[tid], map_width);
-		int _temp_2 = (_temp_1 + 2 + curandom(rand_genes[tid], map_width - 3)) % map_width;
+	// early-stop init
+	__shared__ bool exist_running[1024];
+	__shared__ bool better_check[1024];
 
-		// pointer
-		int first_point = min(_temp_1, _temp_2);
-		int next_point = max(_temp_1, _temp_2);
-
-		// edge's id
-		int first_begin = sequences_list[sequences_offset + first_point];
-		int first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
-		int next_begin = sequences_list[sequences_offset + next_point];
-		int next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
-
-		// distances
-		float distance_fb_to_nb = map[first_begin * map_width + next_begin];
-		float distance_fe_to_ne = map[first_end * map_width + next_end];
-
-		// judge whether changeable
-		if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
-			is_refused[tid] += 1;
+	for (int i = 0; i < max_trial_times; ++i) {
+		// skip if refused
+		if (is_refused[tid] >= max_retry) {
 		}
 		else {
-			// calculate origin distance
-			float distance_fb_to_fe = map[first_begin * map_width + first_end];
-			float distance_nb_to_ne = map[next_begin * map_width + next_end];
+			// find two point to exchange
+			// from a[first_begin - first_end]bc[next_begin - next_end]d
+			// to   a[first_begin - next_begin]cb[first_end - next_end]d
+			int _temp_1 = curandom(rand_genes[tid], map_width);
+			int _temp_2 = (_temp_1 + 2 + curandom(rand_genes[tid], map_width - 3)) % map_width;
 
-			// calculate delta
-			float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
-			// decide whether to accept it 
-			// if delta >= 0, chance to accept it
-			bool accept = (delta < 0);
-			if (!accept) {
-				int accept_chance = exp(-delta / heat) * 10000;
-				accept = curandom(rand_genes[tid], 10000) < accept_chance;
-			}
+			// pointer
+			int first_point = min(_temp_1, _temp_2);
+			int next_point = max(_temp_1, _temp_2);
 
-			if (accept) {
-				// init
-				sequences_length[tid] += delta;
-				is_refused[tid] = 0;
+			// edge's id
+			int first_begin = sequences_list[sequences_offset + first_point];
+			int first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
+			int next_begin = sequences_list[sequences_offset + next_point];
+			int next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
 
-				// make new seq
-				sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
-				sequences_list[sequences_offset + (next_point) % map_width] = first_end;
-				// reverse [(first_point + 2) .. (next_point - 1)]
-				int reverse_begin = (first_point + 2) % map_width;
-				int reverse_end = (next_point - 1) % map_width;
-				while (reverse_begin < reverse_end) {
-					int _temp = sequences_list[sequences_offset + reverse_begin];
-					sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
-					sequences_list[sequences_offset + reverse_end] = _temp;
-					reverse_begin++;
-					reverse_end--;
-				}
-			}
-			else {
+			// distances
+			float distance_fb_to_nb = map[first_begin * map_width + next_begin];
+			float distance_fe_to_ne = map[first_end * map_width + next_end];
+
+			// judge whether changeable
+			if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
 				is_refused[tid] += 1;
 			}
+			else {
+				// calculate origin distance
+				float distance_fb_to_fe = map[first_begin * map_width + first_end];
+				float distance_nb_to_ne = map[next_begin * map_width + next_end];
+
+				// calculate delta
+				float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
+				// decide whether to accept it 
+				// if delta >= 0, chance to accept it
+				bool accept = (delta < 0);
+				if (!accept) {
+					int accept_chance = exp(-delta / heat) * 10000;
+					accept = curandom(rand_genes[tid], 10000) < accept_chance;
+				}
+
+				if (accept) {
+					// init
+					sequences_length[tid] += delta;
+					is_refused[tid] = 0;
+					make_better = true;
+
+					// make new seq
+					sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
+					sequences_list[sequences_offset + (next_point) % map_width] = first_end;
+					// reverse [(first_point + 2) .. (next_point - 1)]
+					int reverse_begin = (first_point + 2) % map_width;
+					int reverse_end = (next_point - 1) % map_width;
+					while (reverse_begin < reverse_end) {
+						int _temp = sequences_list[sequences_offset + reverse_begin];
+						sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
+						sequences_list[sequences_offset + reverse_end] = _temp;
+						reverse_begin++;
+						reverse_end--;
+					}
+				}
+				else {
+					is_refused[tid] += 1;
+				}
+			}
+		}
+
+		// find the best
+		float _best_length = sequences_length[tid];
+		int _best_id = tid;
+		for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
+			if (tid + i < blockDim.x) {
+				float next_length = sequences_length[tid + i];
+				_best_id = (next_length < _best_length) ? tid + i : _best_id;
+				_best_length = (next_length < _best_length) ? next_length : _best_length;
+			}
+		}
+
+		// update the best
+		__shared__ bool need_update;
+		if (tid == 0) {
+			need_update = false;
+			best_id[0] = _best_id;
+			best_dis[0] = _best_length;
+			if (_best_length < last_best_dis[0]) {
+				last_best_dis[0] = _best_length;
+				need_update = true;
+			}
+		}
+		__syncthreads();
+		if (need_update) {
+			int best_offset = best_id[0] * map_width;
+			for (int i = tid; i < map_width; i += blockDim.x) {
+				last_best_seq[i] = sequences_list[best_offset + i];
+			}
+		}
+
+		// reused the best
+		if (is_refused[tid] == max_retry) {
+			is_refused[tid]++;
+			for (int i = 0; i < map_width; ++i) {
+				sequences_list[sequences_offset + i] = last_best_seq[i];
+			}
+		}
+
+		// early-stop judge
+		__shared__ bool exist_running[1024];
+		__shared__ bool better_check[1024];
+		exist_running[tid] = is_refused[tid] < max_retry;
+		better_check[tid] = make_better;
+		__syncthreads();
+
+		for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
+			if (tid + i < blockDim.x) {
+				exist_running[tid] = exist_running[tid] | exist_running[tid + i];
+				better_check[tid] = better_check[tid] | better_check[tid + i];
+			}
+			__syncthreads();
+		}
+		if (!exist_running[0]) {
+			break;
 		}
 	}
 
-	// find the best
-	float _best_length = sequences_length[tid];
-	int _best_id = tid;
-	for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
-		if (tid + i < blockDim.x) {
-			float next_length = sequences_length[tid + i];
-			_best_id = (next_length < _best_length) ? tid + i : _best_id;
-			_best_length = (next_length < _best_length) ? next_length : _best_length;
-		}
-	}
-
-	// update the best
-	__shared__ bool need_update;
+	// make tag by thread 0
 	if (tid == 0) {
-		need_update = false;
-		best_id[0] = _best_id;
-		best_dis[0] = _best_length;
-		if (_best_length < last_best_dis[0]) {
-			last_best_dis[0] = _best_length;
-			need_update = true;
+		if (!better_check[0]) {
+			tag[0] = 2;
 		}
-	}
-	__syncthreads();
-	if (need_update) {
-		int best_offset = best_id[0] * map_width;
-		for (int i = tid; i < map_width; i += blockDim.x) {
-			last_best_seq[i] = sequences_list[best_offset + i];
+		else if (!exist_running[0]) {
+			tag[0] = 1;
 		}
-	}
-
-	// reused the best
-	if (is_refused[tid] == max_retry) {
-		is_refused[tid]++;
-		for (int i = 0; i < map_width; ++i) {
-			sequences_list[sequences_offset + i] = last_best_seq[i];
+		else {
+			tag[0] = 0;
 		}
 	}
 }
 
+/*
 // host part of TSP gpu-solver
-// input:
-//   maps: a vector of vertex ordered by its id
-//   max_retry: max retry times in a T
-//   max_refused: max refused for a series of T
-//   heat: heat of possibility
-//   deheat: deheat perc
-//   beta: used to calculate max run times per T
-//   parallel_count: count of computation in a row
-// output: a vector with the (maybe) best way.
+input:
+* maps: a vector of vertex ordered by its id
+* max_retry: max retry times in a T
+* max_refused: max refused for a series of T
+* heat: heat of possibility
+* deheat: deheat perc
+* beta: used to calculate max run times per T
+* parallel_count: count of computation in a row
+output: a vector with the (maybe) best way.
+*/
 thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
 	int max_retry = MAX_RETRY, int max_refused = MAX_REFUSED,
@@ -455,6 +507,7 @@ thrust::host_vector<int> gpu_TSP_host(
 	// run loop
 	int refused_times = 0;
 	int trial_per_t = 0;
+	thrust::device_vector<int> result_tag(1,0);
 
 	// ptr init
 	float* map_ptr = thrust::raw_pointer_cast(&device_distance_map[0]);
@@ -466,65 +519,41 @@ thrust::host_vector<int> gpu_TSP_host(
 	float* best_dis_ptr = thrust::raw_pointer_cast(&device_best_dis[0]);
 	float* best_seqlength_ptr = thrust::raw_pointer_cast(&device_best_length[0]);
 	int* best_seq_ptr = thrust::raw_pointer_cast(&device_best_sequence[0]);
+	int* tag_ptr = thrust::raw_pointer_cast(&result_tag[0]);
 
 	clock_t ck, ck_2;
 	ck = clock();
 	while (heat > MIN_HEAT) {
-		// have changed in this T
-		bool changed_in_t = false;
-		while (true) {
-			// run kernel
-			gpu_TSP_kernel << <1, parallel_count >> > (
-				map_ptr, seq_size, max_retry, heat, curand_ptr,
-				refused_ptr, seq_ptr, seq_length_ptr, 
-				best_id_ptr, best_dis_ptr,
-				best_seqlength_ptr, best_seq_ptr);
+		// run kernel
+		gpu_TSP_kernel<<<1,parallel_count>>>(
+			map_ptr, seq_size, max_retry, heat,beta, curand_ptr,
+			refused_ptr, seq_ptr, seq_length_ptr, 
+			best_id_ptr, best_dis_ptr,
+			best_seqlength_ptr, best_seq_ptr,
+			tag_ptr);
 
-			// error check
-			cudaError_t error = cudaGetLastError();
-			const char* err_msg = cudaGetErrorString(error);
-			if (strcmp("no error", err_msg) != 0) {
-				printf("CUDA error: %s\n", err_msg);
-			}
-
-			// get result
-			thrust::host_vector<int> host_is_refused = device_is_refused;
-
-			// judge whether all stop
-			bool has_accept = false;
-			for (int i = 0; i < parallel_count; ++i) {
-				// accept for this sequence
-				if (host_is_refused[i] < max_retry) {
-					has_accept = true;
-					if (host_is_refused[i] == 0) {
-						trial_per_t++;
-					}
-				}
-			}
-
-			// if all_retry or too much trial
-			if (!has_accept || trial_per_t >= max_trial_per_t) {
-				best_sequence.assign(device_best_sequence.begin(), device_best_sequence.end());
-				memset(host_is_refused.data(), 0, sizeof(int)*parallel_count);
-				device_is_refused.assign(host_is_refused.begin(), host_is_refused.end());
-				// no change in this T
-				if (!changed_in_t) {
-					refused_times++;
-				}
-#ifdef OUTPUT_DEBUG
-				if (!changed_in_t) printf("(Refused)");
-				else if (!has_accept) printf("(Early-stop)");
-				else printf("(Normally)");
-				float real_length = calculate_distance(maps, best_sequence);
-				printf("%.3f: Current best length is %.3f\n", heat, real_length);
-#endif // OUTPUT_DEBUG
-				break;
-			}
-			else {
-				changed_in_t = true;
-				refused_times = 0;
-			}
+		// error check
+		cudaError_t error = cudaGetLastError();
+		const char* err_msg = cudaGetErrorString(error);
+		if (strcmp("no error", err_msg) != 0) {
+			printf("CUDA error: %s\n", err_msg);
 		}
+
+		int tag = result_tag[0];
+
+		best_sequence.assign(device_best_sequence.begin(), device_best_sequence.end());
+		// no change in this T
+		if (tag == 2) {
+			refused_times++;
+		}
+#ifdef OUTPUT_DEBUG
+		if (tag == 2) printf("(Refused)");
+		else if (tag == 1) printf("(Early-stop)");
+		else if (tag == 0) printf("(Normally)");
+		else printf("(Unknown tag: %d)");
+		float real_length = calculate_distance(maps, best_sequence);
+		printf("%.3f: Current best length is %.3f\n", heat, real_length);
+#endif // OUTPUT_DEBUG
 
 		if (refused_times >= max_refused) {
 			break;
