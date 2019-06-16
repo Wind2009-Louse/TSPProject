@@ -27,7 +27,7 @@ const float MIN_HEAT = 0.0001;
 const int BETA = 3;
 
 // middle DEBUG
-//#define OUTPUT_DEBUG
+#define OUTPUT_DEBUG
 
 // make a random sequence that satisfy TSP.
 // input a vector of vertex, return a vector contains the list.
@@ -285,8 +285,7 @@ input/output:
 */
 __global__ void gpu_TSP_kernel(
 	float* map, const int map_width, int max_retry, float heat, int beta,
-	curandState* rand_genes, int* is_refused,
-	int* sequences_list, float* sequences_length,
+	curandState* rand_genes, int* sequences_list, float* sequences_length,
 	float* best_dis, int* best_seq,
 	int* tag
 ) {
@@ -294,7 +293,7 @@ __global__ void gpu_TSP_kernel(
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
 	int max_trial_times = beta * map_width * map_width / blockDim.x;
-	is_refused[tid] = 0;
+	int retry_count = 0;
 	bool make_better = false;
 
 	// early-stop init
@@ -303,7 +302,7 @@ __global__ void gpu_TSP_kernel(
 
 	while (max_trial_times--) {
 		// skip if refused
-		if (is_refused[tid] >= max_retry) {
+		if (retry_count >= max_retry) {
 		}
 		else {
 			// find two point to exchange
@@ -328,7 +327,7 @@ __global__ void gpu_TSP_kernel(
 
 			// judge whether changeable
 			if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
-				is_refused[tid] += 1;
+				retry_count += 1;
 			}
 			else {
 				// calculate origin distance
@@ -348,7 +347,7 @@ __global__ void gpu_TSP_kernel(
 				if (accept) {
 					// init
 					sequences_length[tid] += delta;
-					is_refused[tid] = 0;
+					retry_count = 0;
 					make_better = true;
 
 					// make new seq
@@ -366,13 +365,13 @@ __global__ void gpu_TSP_kernel(
 					}
 				}
 				else {
-					is_refused[tid] += 1;
+					retry_count += 1;
 				}
 			}
 		}
 
 		// early-stop judge
-		exist_running[tid] = is_refused[tid] < max_retry;
+		exist_running[tid] = retry_count < max_retry;
 		better_check[tid] = make_better;
 		__syncthreads();
 
@@ -422,7 +421,7 @@ __global__ void gpu_TSP_kernel(
 	}
 
 	// reused the best
-	if (is_refused[tid] >= max_retry) {
+	if (retry_count >= max_retry) {
 		for (int i = 0; i < map_width; ++i) {
 			sequences_list[sequences_offset + i] = best_seq[i];
 		}
@@ -458,7 +457,7 @@ thrust::host_vector<int> gpu_TSP_host(
 	thrust::host_vector<Vertex> maps,
 	int max_retry = MAX_RETRY, int max_refused = MAX_REFUSED,
 	float heat = ORIGIN_HEAT, float deheat = DEHEAT_PER, float beta = BETA,
-	int parallel_count = 512
+	int parallel_count = 1024
 ) {
 	// transform maps into kernel form
 	auto seq_size = maps.size();
@@ -468,9 +467,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	}
 	thrust::device_vector<float> device_distance_map = host_distance_map;
 	device_distance_map.resize(host_distance_map.size());
-
-	// initialize refuse vector
-	thrust::device_vector<int> device_is_refused(parallel_count, 0);
 
 	// make sequence
 	thrust::host_vector<int> host_sequences;
@@ -502,7 +498,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	// ptr init
 	float* map_ptr = thrust::raw_pointer_cast(&device_distance_map[0]);
 	curandState* curand_ptr = thrust::raw_pointer_cast(&rand_genes[0]);
-	int* refused_ptr = thrust::raw_pointer_cast(&device_is_refused[0]);
 	int* seq_ptr = thrust::raw_pointer_cast(&device_sequence[0]);
 	float* seq_length_ptr = thrust::raw_pointer_cast(&device_sequences_length[0]);
 	float* best_seqlength_ptr = thrust::raw_pointer_cast(&device_best_length[0]);
@@ -514,8 +509,8 @@ thrust::host_vector<int> gpu_TSP_host(
 	while (heat > MIN_HEAT) {
 		// run kernel
 		gpu_TSP_kernel<<<1,parallel_count>>>(
-			map_ptr, seq_size, max_retry, heat,beta, curand_ptr,
-			refused_ptr, seq_ptr, seq_length_ptr, 
+			map_ptr, seq_size, max_retry, heat, beta, 
+			curand_ptr, seq_ptr, seq_length_ptr, 
 			best_seqlength_ptr, best_seq_ptr,
 			tag_ptr);
 
@@ -561,6 +556,7 @@ int main() {
 	srand((int)time(0));
 	clock_t ck, ck_2;
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att48.xml");
+	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/brg180.xml");
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/a280.xml");
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
 	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/d657.xml");
