@@ -21,7 +21,7 @@
 // some constant, used to compared between serial and cuda
 const int MAX_RETRY = 100;
 const int MAX_REFUSED = 5;
-const float ORIGIN_HEAT = 50;
+const float ORIGIN_HEAT = 100;
 const float DEHEAT_PER = 0.95;
 const float MIN_HEAT = 0.0001;
 const int BETA = 3;
@@ -289,71 +289,69 @@ __global__ void gpu_TSP_kernel(
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
 
-	// clear the retry count if exceed(already reset in last call)
-	if (is_refused[tid] >= max_retry) {
-		is_refused[tid] = 0;
-	}
+	// skip if refused
+	if (is_refused[tid] < max_retry) {
+		// find two point to exchange
+		// from a[first_begin - first_end]bc[next_begin - next_end]d
+		// to   a[first_begin - next_begin]cb[first_end - next_end]d
+		int _temp_1 = curandom(rand_genes[tid], map_width);
+		int _temp_2 = (_temp_1 + 2 + curandom(rand_genes[tid], map_width - 3)) % map_width;
 
-	// find two point to exchange
-	// from a[first_begin - first_end]bc[next_begin - next_end]d
-	// to   a[first_begin - next_begin]cb[first_end - next_end]d
-	int _temp_1 = curandom(rand_genes[tid],map_width);
-	int _temp_2 = (_temp_1 + 2 + curandom(rand_genes[tid], map_width - 3)) % map_width;
+		// pointer
+		int first_point = min(_temp_1, _temp_2);
+		int next_point = max(_temp_1, _temp_2);
 
-	// pointer
-	int first_point = min(_temp_1, _temp_2);
-	int next_point = max(_temp_1, _temp_2);
+		// edge's id
+		int first_begin = sequences_list[sequences_offset + first_point];
+		int first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
+		int next_begin = sequences_list[sequences_offset + next_point];
+		int next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
 
-	// edge's id
-	int first_begin = sequences_list[sequences_offset + first_point];
-	int first_end = sequences_list[sequences_offset + (first_point + 1) % map_width];
-	int next_begin = sequences_list[sequences_offset + next_point];
-	int next_end = sequences_list[sequences_offset + (next_point + 1) % map_width];
+		// distances
+		float distance_fb_to_nb = map[first_begin * map_width + next_begin];
+		float distance_fe_to_ne = map[first_end * map_width + next_end];
 
-	// distances
-	float distance_fb_to_nb = map[first_begin * map_width + next_begin];
-	float distance_fe_to_ne = map[first_end * map_width + next_end];
-
-	// judge whether changeable
-	if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
-		is_refused[tid] += 1;
-	}
-	else {
-		// calculate origin distance
-		float distance_fb_to_fe = map[first_begin * map_width + first_end];
-		float distance_nb_to_ne = map[next_begin * map_width + next_end];
-
-		// calculate delta
-		float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
-		// decide whether to accept it 
-		// if delta >= 0, chance to accept it
-		bool accept = (delta < 0);
-		if (!accept) {
-			int accept_chance = exp(-delta / heat) * 10000;
-			accept = curandom(rand_genes[tid], 10000) < accept_chance;
-		}
-
-		if (accept) {
-			// init
-			sequences_length[tid] += delta;
-			is_refused[tid] = 0;
-
-			// make new seq
-			sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
-			sequences_list[sequences_offset + (next_point) % map_width] = first_end;
-			// reverse [(first_point + 2) .. (next_point - 1)]
-			int reverse_begin = (first_point + 2) % map_width;
-			int reverse_end = (next_point - 1) % map_width;
-			while (reverse_begin < reverse_end) {
-				int _temp = sequences_list[sequences_offset + reverse_begin];
-				sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
-				sequences_list[sequences_offset + reverse_end] = _temp;
-				reverse_begin++;
-				reverse_end--;
-			}
+		// judge whether changeable
+		if (distance_fb_to_nb < 0 || distance_fe_to_ne < 0) {
+			is_refused[tid] += 1;
 		}
 		else {
-			is_refused[tid] += 1;
+			// calculate origin distance
+			float distance_fb_to_fe = map[first_begin * map_width + first_end];
+			float distance_nb_to_ne = map[next_begin * map_width + next_end];
+
+			// calculate delta
+			float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
+			// decide whether to accept it 
+			// if delta >= 0, chance to accept it
+			bool accept = (delta < 0);
+			if (!accept) {
+				int accept_chance = exp(-delta / heat) * 10000;
+				accept = curandom(rand_genes[tid], 10000) < accept_chance;
+			}
+
+			if (accept) {
+				// init
+				sequences_length[tid] += delta;
+				is_refused[tid] = 0;
+
+				// make new seq
+				sequences_list[sequences_offset + (first_point + 1) % map_width] = next_begin;
+				sequences_list[sequences_offset + (next_point) % map_width] = first_end;
+				// reverse [(first_point + 2) .. (next_point - 1)]
+				int reverse_begin = (first_point + 2) % map_width;
+				int reverse_end = (next_point - 1) % map_width;
+				while (reverse_begin < reverse_end) {
+					int _temp = sequences_list[sequences_offset + reverse_begin];
+					sequences_list[sequences_offset + reverse_begin] = sequences_list[sequences_offset + reverse_end];
+					sequences_list[sequences_offset + reverse_end] = _temp;
+					reverse_begin++;
+					reverse_end--;
+				}
+			}
+			else {
+				is_refused[tid] += 1;
+			}
 		}
 	}
 
@@ -388,7 +386,8 @@ __global__ void gpu_TSP_kernel(
 	}
 
 	// reused the best
-	if (is_refused[tid] >= max_retry) {
+	if (is_refused[tid] == max_retry) {
+		is_refused[tid]++;
 		for (int i = 0; i < map_width; ++i) {
 			sequences_list[sequences_offset + i] = last_best_seq[i];
 		}
@@ -419,6 +418,9 @@ thrust::host_vector<int> gpu_TSP_host(
 	}
 	thrust::device_vector<float> device_distance_map = host_distance_map;
 	device_distance_map.resize(host_distance_map.size());
+
+	// time initialize
+	int max_trial_per_t = beta * seq_size * seq_size;
 
 	// initialize refuse vector
 	thrust::device_vector<int> device_is_refused(parallel_count, 0);
@@ -468,9 +470,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	clock_t ck, ck_2;
 	ck = clock();
 	while (heat > MIN_HEAT) {
-		// first initialize
-		int max_trial_per_t = beta * seq_size * seq_size / max(heat,1);
-
 		// have changed in this T
 		bool changed_in_t = false;
 		while (true) {
@@ -495,12 +494,13 @@ thrust::host_vector<int> gpu_TSP_host(
 			bool has_accept = false;
 			for (int i = 0; i < parallel_count; ++i) {
 				// accept for this sequence
-				if (host_is_refused[i] == 0) {
+				if (host_is_refused[i] < max_retry) {
 					has_accept = true;
+					if (host_is_refused[i] == 0) {
+						trial_per_t++;
+					}
 				}
 			}
-
-			trial_per_t += parallel_count;
 
 			// if all_retry or too much trial
 			if (!has_accept || trial_per_t >= max_trial_per_t) {
