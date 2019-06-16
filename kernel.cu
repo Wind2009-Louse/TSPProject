@@ -27,7 +27,7 @@ const float MIN_HEAT = 0.0001;
 const int BETA = 3;
 
 // middle DEBUG
-#define OUTPUT_DEBUG
+//#define OUTPUT_DEBUG
 
 // make a random sequence that satisfy TSP.
 // input a vector of vertex, return a vector contains the list.
@@ -277,7 +277,6 @@ input:
 output:
 * is_refused: a 1d vector recording each thread's return status.
 ** if it's true, the thread stop in advanced.
-* best_id, best_dis: the id and distance of the best sequence
 * tag: tag of running result: 0(normal), 1(early-stop), 2(refused)
 input/output: 
 * sequences_list: a 1d vector on behalf of a 2d matrix
@@ -288,8 +287,7 @@ __global__ void gpu_TSP_kernel(
 	float* map, const int map_width, int max_retry, float heat, int beta,
 	curandState* rand_genes, int* is_refused,
 	int* sequences_list, float* sequences_length,
-	int* best_id, float* best_dis,
-	float* last_best_dis, int* last_best_seq,
+	float* best_dis, int* best_seq,
 	int* tag
 ) {
 	// init
@@ -303,7 +301,7 @@ __global__ void gpu_TSP_kernel(
 	__shared__ bool exist_running[1024];
 	__shared__ bool better_check[1024];
 
-	for (int i = 0; i < max_trial_times; ++i) {
+	while (max_trial_times--) {
 		// skip if refused
 		if (is_refused[tid] >= max_retry) {
 		}
@@ -373,44 +371,6 @@ __global__ void gpu_TSP_kernel(
 			}
 		}
 
-		// find the best
-		float _best_length = sequences_length[tid];
-		int _best_id = tid;
-		for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
-			if (tid + i < blockDim.x) {
-				float next_length = sequences_length[tid + i];
-				_best_id = (next_length < _best_length) ? tid + i : _best_id;
-				_best_length = (next_length < _best_length) ? next_length : _best_length;
-			}
-		}
-
-		// update the best
-		__shared__ bool need_update;
-		if (tid == 0) {
-			need_update = false;
-			best_id[0] = _best_id;
-			best_dis[0] = _best_length;
-			if (_best_length < last_best_dis[0]) {
-				last_best_dis[0] = _best_length;
-				need_update = true;
-			}
-		}
-		__syncthreads();
-		if (need_update) {
-			int best_offset = best_id[0] * map_width;
-			for (int i = tid; i < map_width; i += blockDim.x) {
-				last_best_seq[i] = sequences_list[best_offset + i];
-			}
-		}
-
-		// reused the best
-		if (is_refused[tid] == max_retry) {
-			is_refused[tid]++;
-			for (int i = 0; i < map_width; ++i) {
-				sequences_list[sequences_offset + i] = last_best_seq[i];
-			}
-		}
-
 		// early-stop judge
 		exist_running[tid] = is_refused[tid] < max_retry;
 		better_check[tid] = make_better;
@@ -425,6 +385,46 @@ __global__ void gpu_TSP_kernel(
 		}
 		if (!exist_running[0]) {
 			break;
+		}
+	}
+
+	// find the best
+	__shared__ float _best_length[1024];
+	__shared__ float _best_id[1024];
+	_best_length[tid] = sequences_length[tid];
+	_best_id[tid] = tid;
+	__syncthreads();
+	for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
+		if (tid + i < blockDim.x) {
+			float current_best = _best_length[tid];
+			float next_length = _best_length[tid + i];
+			_best_id[tid] = (next_length < current_best) ? _best_id[tid + i] : _best_id[tid];
+			_best_length[tid] = (next_length < current_best) ? next_length : current_best;
+		}
+		__syncthreads();
+	}
+
+	// update the best
+	__shared__ bool need_update;
+	if (tid == 0) {
+		need_update = false;
+		if (_best_length[0] < best_dis[0]) {
+			best_dis[0] = _best_length[0];
+			need_update = true;
+		}
+	}
+	__syncthreads();
+	if (need_update) {
+		int best_offset = _best_id[0] * map_width;
+		for (int i = tid; i < map_width; i += blockDim.x) {
+			best_seq[i] = sequences_list[best_offset + i];
+		}
+	}
+
+	// reused the best
+	if (is_refused[tid] >= max_retry) {
+		for (int i = 0; i < map_width; ++i) {
+			sequences_list[sequences_offset + i] = best_seq[i];
 		}
 	}
 
@@ -469,9 +469,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	thrust::device_vector<float> device_distance_map = host_distance_map;
 	device_distance_map.resize(host_distance_map.size());
 
-	// time initialize
-	int max_trial_per_t = beta * seq_size * seq_size;
-
 	// initialize refuse vector
 	thrust::device_vector<int> device_is_refused(parallel_count, 0);
 
@@ -498,13 +495,8 @@ thrust::host_vector<int> gpu_TSP_host(
 	thrust::device_vector<curandState> rand_genes(parallel_count);
 	random_initial << <1, parallel_count >> > ((int)time(0), thrust::raw_pointer_cast(&rand_genes[0]));
 
-	// best initialize
-	thrust::device_vector<int> device_best_id(1);
-	thrust::device_vector<float> device_best_dis(1);
-
 	// run loop
 	int refused_times = 0;
-	int trial_per_t = 0;
 	thrust::device_vector<int> result_tag(1,0);
 
 	// ptr init
@@ -513,8 +505,6 @@ thrust::host_vector<int> gpu_TSP_host(
 	int* refused_ptr = thrust::raw_pointer_cast(&device_is_refused[0]);
 	int* seq_ptr = thrust::raw_pointer_cast(&device_sequence[0]);
 	float* seq_length_ptr = thrust::raw_pointer_cast(&device_sequences_length[0]);
-	int* best_id_ptr = thrust::raw_pointer_cast(&device_best_id[0]);
-	float* best_dis_ptr = thrust::raw_pointer_cast(&device_best_dis[0]);
 	float* best_seqlength_ptr = thrust::raw_pointer_cast(&device_best_length[0]);
 	int* best_seq_ptr = thrust::raw_pointer_cast(&device_best_sequence[0]);
 	int* tag_ptr = thrust::raw_pointer_cast(&result_tag[0]);
@@ -526,7 +516,6 @@ thrust::host_vector<int> gpu_TSP_host(
 		gpu_TSP_kernel<<<1,parallel_count>>>(
 			map_ptr, seq_size, max_retry, heat,beta, curand_ptr,
 			refused_ptr, seq_ptr, seq_length_ptr, 
-			best_id_ptr, best_dis_ptr,
 			best_seqlength_ptr, best_seq_ptr,
 			tag_ptr);
 
@@ -559,7 +548,6 @@ thrust::host_vector<int> gpu_TSP_host(
 
 		// deheat
 		heat *= deheat;
-		trial_per_t = 0;
 	}
 	ck_2 = clock();
 	printf("Time used in loop: %d\n", ck_2 - ck);
