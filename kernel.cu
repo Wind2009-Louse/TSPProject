@@ -27,7 +27,7 @@ const float MIN_HEAT = 0.0001;
 const int BETA = 3;
 
 // middle DEBUG
-#define OUTPUT_DEBUG
+//#define OUTPUT_DEBUG
 
 // make a random sequence that satisfy TSP.
 // input a vector of vertex, return a vector contains the list.
@@ -293,6 +293,7 @@ __global__ void gpu_TSP_kernel(
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
 	int max_trial_times = beta * map_width * map_width / (1 + blockDim.x * (1 - tag[0]));
+	int trial_times = max_trial_times;
 	int retry_count = 0;
 	bool make_better = false;
 
@@ -300,7 +301,7 @@ __global__ void gpu_TSP_kernel(
 	__shared__ bool exist_running[1024];
 	__shared__ bool better_check[1024];
 
-	while (max_trial_times--) {
+	while (trial_times--) {
 		// skip if refused
 		if (retry_count >= max_retry) {
 		}
@@ -331,17 +332,18 @@ __global__ void gpu_TSP_kernel(
 			}
 			else {
 				// calculate origin distance
-				float distance_fb_to_fe = map[first_begin * map_width + first_end];
-				float distance_nb_to_ne = map[next_begin * map_width + next_end];
+				//float distance_fb_to_fe =;
+				//float distance_nb_to_ne = ;
 
 				// calculate delta
-				float delta = distance_fb_to_nb + distance_fe_to_ne - distance_fb_to_fe - distance_nb_to_ne;
+				float delta = distance_fb_to_nb + distance_fe_to_ne 
+					- map[first_begin * map_width + first_end] 
+					- map[next_begin * map_width + next_end];
 				// decide whether to accept it 
 				// if delta >= 0, chance to accept it
 				bool accept = (delta < 0);
 				if (!accept) {
-					int accept_chance = __expf(-delta / heat) * 10000;
-					accept = curandom(rand_genes[tid], 10000) < accept_chance;
+					accept = curandom(rand_genes[tid], 10000) < (__expf(-delta / heat) * 10000);
 				}
 
 				if (accept) {
@@ -370,20 +372,22 @@ __global__ void gpu_TSP_kernel(
 			}
 		}
 
-		// early-stop judge
-		exist_running[tid] = retry_count < max_retry;
-		better_check[tid] = make_better;
-		__syncthreads();
-
-		for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
-			if (tid + i < blockDim.x) {
-				exist_running[tid] = exist_running[tid] | exist_running[tid + i];
-				better_check[tid] = better_check[tid] | better_check[tid + i];
-			}
+		if (max_trial_times - trial_times >= max_retry) {
+			// early-stop judge
+			exist_running[tid] = retry_count < max_retry;
+			better_check[tid] = make_better;
 			__syncthreads();
-		}
-		if (!exist_running[0]) {
-			break;
+
+			for (int i = blockDim.x >> 1; i > 0; i >>= 1) {
+				if (tid + i < blockDim.x) {
+					exist_running[tid] = exist_running[tid] | exist_running[tid + i];
+					better_check[tid] = better_check[tid] | better_check[tid + i];
+				}
+				__syncthreads();
+			}
+			if (!exist_running[0]) {
+				break;
+			}
 		}
 	}
 
@@ -397,8 +401,9 @@ __global__ void gpu_TSP_kernel(
 		if (tid + i < blockDim.x) {
 			float current_best = _best_length[tid];
 			float next_length = _best_length[tid + i];
-			_best_id[tid] = (next_length < current_best) ? _best_id[tid + i] : _best_id[tid];
-			_best_length[tid] = (next_length < current_best) ? next_length : current_best;
+			bool _updated = (next_length < current_best);
+			_best_id[tid] = _updated ? _best_id[tid + i] : _best_id[tid];
+			_best_length[tid] = _updated ? next_length : current_best;
 		}
 		__syncthreads();
 	}
@@ -523,7 +528,6 @@ thrust::host_vector<int> gpu_TSP_host(
 
 		int tag = result_tag[0];
 
-		best_sequence.assign(device_best_sequence.begin(), device_best_sequence.end());
 		// no change in this T
 		if (tag == 2) {
 			refused_times++;
@@ -532,6 +536,7 @@ thrust::host_vector<int> gpu_TSP_host(
 			result_tag[0] = 1;
 		}
 #ifdef OUTPUT_DEBUG
+		best_sequence.assign(device_best_sequence.begin(), device_best_sequence.end());
 		if (tag == 2) printf("(Refused)");
 		else if (tag == 1) printf("(Early-stop)");
 		else if (tag == 0) printf("(Normally)");
@@ -549,7 +554,7 @@ thrust::host_vector<int> gpu_TSP_host(
 	}
 	ck_2 = clock();
 	printf("Time used in loop: %d\n", ck_2 - ck);
-	
+	best_sequence.assign(device_best_sequence.begin(), device_best_sequence.end());
 	return best_sequence;
 }
 
