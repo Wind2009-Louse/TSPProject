@@ -226,9 +226,11 @@ thrust::host_vector<int> serial_TSP(thrust::host_vector<Vertex> maps,
 		// too much trial or too much retry
 		if (retry_times >= max_retry || trial_per_t >= max_trial_per_t) {
 			trial_per_t = 0;
+#ifdef OUTPUT_DEBUG
 			if (!changed_in_t) printf("(Early-stop)");
 			else printf("(Normally)");
 			printf("%.3f: Current length is %.5f\n", heat, seq_length);
+#endif
 			heat *= deheat;
 
 			// if is refused
@@ -291,7 +293,7 @@ __global__ void gpu_TSP_kernel(
 	// init
 	int tid = blockDim.x * blockIdx.x + threadIdx.x;
 	int sequences_offset = tid * map_width;
-	int max_trial_times = beta * map_width * map_width / (1 + blockDim.x * (1 - tag[0]));
+	int max_trial_times = max(beta * map_width * map_width / (1 + blockDim.x * (1 - tag[0])),max_retry);
 	int trial_times = max_trial_times;
 	int retry_count = 0;
 	bool make_better = false;
@@ -526,11 +528,14 @@ thrust::host_vector<int> gpu_TSP_host(
 			printf("CUDA error: %s\n", err_msg);
 		}
 
+		// get tag
 		int tag = result_tag[0];
-
 		// no change in this T
 		if (tag == 2) {
 			refused_times++;
+		}
+		else {
+			refused_times = 0;
 		}
 		if (tag != 0) {
 			result_tag[0] = 1;
@@ -559,15 +564,27 @@ thrust::host_vector<int> gpu_TSP_host(
 }
 
 // main function
-int main() {
+int main(int argc, char *argv[]) {
 	// init
+	thrust::host_vector<Vertex> maps;
 	srand((int)time(0));
 	clock_t ck, ck_2;
-	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att48.xml");
-	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/brg180.xml");
+
+	char filename[50] = "samples/xml/";
+
+	if (argc == 2) {
+		char* _filename = argv[1];
+		strcat(filename, _filename);
+		maps = read_xml_map(filename);
+	}
+	else {
+		printf("Illegal input.\n");
+	}
+
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/a280.xml");
+	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/fl417.xml");
 	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/att532.xml");
-	thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/d657.xml");
+	//thrust::host_vector<Vertex> maps = read_xml_map("samples/xml/d657.xml");
 
 	ck = clock();
 	thrust::host_vector<int> serial_result = serial_TSP(maps);
@@ -582,7 +599,7 @@ int main() {
 	printf("Parallel length: %.5f\n", calculate_distance(maps, parallel_result));
 
 	printf("Run Successfully.\n");
-	system("pause");
+	//system("pause");
 
 	return 0;
 }
